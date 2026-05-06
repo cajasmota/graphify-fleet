@@ -4,13 +4,26 @@
 set -euo pipefail
 
 GFLEET_VERSION="0.1.0"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+# Resolve the real path of this script (following symlinks) so templates/ is
+# discoverable when gfleet is symlinked onto PATH.
+_resolve_self() {
+    local src="${BASH_SOURCE[0]}"
+    while [ -h "$src" ]; do
+        local d; d="$(cd -P "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        case "$src" in /*) ;; *) src="$d/$src" ;; esac
+    done
+    cd -P "$(dirname "$src")" && pwd
+}
+SCRIPT_DIR="$(_resolve_self)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATES_DIR="$ROOT_DIR/templates"
 
 GRAPHIFY_DIR="${GRAPHIFY_DIR:-$HOME/.graphify}"
 GROUPS_DIR="$GRAPHIFY_DIR/groups"
 LOCAL_BIN="$HOME/.local/bin"
+FLEET_STATE_DIR="${GFLEET_STATE_DIR:-$HOME/.graphify-fleet}"
+REGISTRY="$FLEET_STATE_DIR/registry.json"
 
 # ----- platform -----
 case "$(uname -s)" in
@@ -75,6 +88,53 @@ expand_path() {
     else
         printf '%s\n' "$p"
     fi
+}
+
+resolve_config() {
+    # Accepts: a config file path, a registered group name, or "" (= ALL groups).
+    # Prints the resolved config path on stdout, or "ALL", or dies.
+    local arg="${1:-}"
+    if [ -z "$arg" ]; then
+        printf '%s\n' "ALL"
+        return
+    fi
+    if [ -f "$arg" ]; then
+        printf '%s\n' "$arg"
+        return
+    fi
+    if [ -f "$REGISTRY" ]; then
+        local cfg
+        cfg="$(jq -r --arg n "$arg" '.groups[$n].config // empty' "$REGISTRY")"
+        if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+            printf '%s\n' "$cfg"
+            return
+        fi
+    fi
+    die "no config file or registered group named: $arg (try 'gfleet list')"
+}
+
+list_registered_configs() {
+    [ -f "$REGISTRY" ] || return 0
+    jq -r '.groups | to_entries[] | .value.config' "$REGISTRY"
+}
+
+register_group() {
+    local config="$1"
+    mkdir -p "$FLEET_STATE_DIR"
+    [ -f "$REGISTRY" ] || echo '{"groups":{}}' > "$REGISTRY"
+    local abs; abs="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
+    local now; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local tmp; tmp="$(mktemp)"
+    jq --arg name "$GROUP" --arg cfg "$abs" --arg ts "$now" \
+        '.groups[$name] = {config:$cfg, installed_at:$ts}' "$REGISTRY" > "$tmp"
+    mv "$tmp" "$REGISTRY"
+}
+
+unregister_group() {
+    [ -f "$REGISTRY" ] || return 0
+    local tmp; tmp="$(mktemp)"
+    jq --arg name "$GROUP" 'del(.groups[$name])' "$REGISTRY" > "$tmp"
+    mv "$tmp" "$REGISTRY"
 }
 
 load_config() {
@@ -436,10 +496,12 @@ cmd_install() {
         ensure_windsurf_mcp
     fi
 
+    register_group "$config"
+
     say ""
     ok "group '$GROUP' installed."
     info "merged graph: $GROUP_GRAPH"
-    info "watchers:     gfleet status $config"
+    info "registered:   gfleet status $GROUP   (or just: gfleet status)"
 }
 
 ensure_windsurf_skill() {
@@ -539,8 +601,29 @@ cmd_uninstall() {
         mv "$tmp" "$f"
     fi
 
+    unregister_group
+
     say ""
     ok "group '$GROUP' uninstalled. Per-repo graphify-out/ left intact."
+}
+
+cmd_list() {
+    if [ ! -f "$REGISTRY" ] || [ "$(jq '.groups | length' "$REGISTRY")" = "0" ]; then
+        say "no groups registered yet. run: gfleet install <config.json>"
+        return 0
+    fi
+    printf "%-20s %-12s %s\n" "GROUP" "NODES" "CONFIG"
+    hr
+    while IFS=$'\t' read -r name cfg; do
+        local graph="$GROUPS_DIR/${name}.json"
+        local nodes="-"
+        [ -f "$graph" ] && nodes="$(jq '.nodes | length' "$graph" 2>/dev/null || echo '?')"
+        local mark=" "
+        [ -f "$cfg" ] || mark="!"   # config file has been moved/deleted
+        printf "%-20s %-12s %s%s\n" "$name" "$nodes" "$mark" "$cfg"
+    done < <(jq -r '.groups | to_entries[] | [.key, .value.config] | @tsv' "$REGISTRY")
+    say ""
+    c_dim "  ! = config file no longer at registered path"
 }
 
 cmd_status() {
@@ -628,35 +711,39 @@ usage() {
 gfleet $GFLEET_VERSION — orchestrate graphify across multiple related repos.
 
 USAGE
-  gfleet <command> [config.json] [slug]
+  gfleet <command> [<group-name> | <config.json>] [slug]
+
+  After 'install', commands accept the group NAME (e.g. 'upvate') instead of
+  the config path. Omit the argument entirely to fan out across all registered
+  groups. The config path always works as a fallback.
 
 SETUP
-  doctor                           check prerequisites (bash, jq, git, uv, graphify)
-  install   <config.json>          set up fleet group (idempotent — safe to re-run)
-  uninstall <config.json>          remove watchers, hooks, configs, group graph
+  doctor                              check prerequisites (bash, jq, git, uv, graphify)
+  install   <config.json>             set up fleet group + register it (idempotent)
+  uninstall [group|config]            remove watchers, hooks, configs, group graph
 
 INSPECT
-  status    <config.json>          watcher PIDs + node/edge counts of merged graph
-  help                             show this message
+  list  (or: ls)                      show all registered groups + node counts
+  status    [group|config]            watcher PIDs + node/edge counts (no arg = all)
+  help                                show this message
 
 REBUILD
-  rebuild   <config.json> [slug]   force AST rebuild (use after deletions);
-                                   bypasses graphify's shrink protection
-  reset     <config.json> [slug]   wipe graphify-out/ entirely and rebuild from scratch
-                                   (use when caches are stale or after refactors)
-  remerge   <config.json>          re-merge group graph from current per-repo graphs
-                                   (no rebuild — use if only the merge file is missing)
+  rebuild   [group|config] [slug]     force AST rebuild (use after deletions)
+  reset     [group|config] [slug]     wipe graphify-out/ and rebuild from scratch
+  remerge   [group|config]            re-merge group graph (no rebuild)
 
 WATCHERS
-  start     <config.json>          load watchers (launchd / systemd-user / Scheduled Tasks)
-  stop      <config.json>          unload watchers
-  restart   <config.json>
+  start     [group|config]            load watchers (no arg = all groups)
+  stop      [group|config]            unload watchers
+  restart   [group|config]
 
 EXAMPLES
-  gfleet install   ~/configs/upvate.fleet.json
-  gfleet status    ~/configs/upvate.fleet.json
-  gfleet reset     ~/configs/upvate.fleet.json upvate-core   # one repo
-  gfleet uninstall ~/configs/upvate.fleet.json
+  gfleet install ~/configs/upvate.fleet.json    # one-time per group
+  gfleet                                        # bare invocation = list groups
+  gfleet status                                 # all groups
+  gfleet status upvate                          # by name
+  gfleet reset upvate upvate-core               # one repo in 'upvate' group
+  gfleet uninstall upvate
 
 CONFIG FORMAT
   See examples/upvate.fleet.json. Each config defines one "group" of related
@@ -668,21 +755,61 @@ DOCS
 EOF
 }
 
+run_for_each_group() {
+    # Helper: when a command is given no config arg, run it across all
+    # registered groups. Usage: run_for_each_group <cmd_func> [extra-args...]
+    local fn="$1"; shift
+    if [ ! -f "$REGISTRY" ] || [ "$(jq '.groups | length' "$REGISTRY")" = "0" ]; then
+        die "no groups registered. run: gfleet install <config.json>"
+    fi
+    local first=1
+    while IFS= read -r cfg; do
+        [ -z "$cfg" ] && continue
+        if [ ! -f "$cfg" ]; then
+            warn "skipping missing config: $cfg"
+            continue
+        fi
+        [ $first -eq 0 ] && say ""
+        first=0
+        "$fn" "$cfg" "$@"
+    done < <(list_registered_configs)
+}
+
+dispatch_with_config() {
+    # Most commands accept: <config-or-group-name> [extra]. If empty, fan out
+    # over all registered groups.
+    local fn="$1"; shift
+    local arg="${1:-}"
+    if [ -z "$arg" ]; then
+        run_for_each_group "$fn" "${@:2}"
+        return
+    fi
+    local resolved
+    resolved="$(resolve_config "$arg")"
+    if [ "$resolved" = "ALL" ]; then
+        run_for_each_group "$fn" "${@:2}"
+    else
+        "$fn" "$resolved" "${@:2}"
+    fi
+}
+
 main() {
     local cmd="${1:-}"
     shift || true
     case "$cmd" in
-        doctor)    cmd_doctor "$@" ;;
-        install)   [ $# -ge 1 ] || die "usage: gfleet install <config.json>";    cmd_install   "$@" ;;
-        uninstall) [ $# -ge 1 ] || die "usage: gfleet uninstall <config.json>"; cmd_uninstall "$@" ;;
-        status)    [ $# -ge 1 ] || die "usage: gfleet status <config.json>";     cmd_status    "$@" ;;
-        rebuild)   [ $# -ge 1 ] || die "usage: gfleet rebuild <config.json> [slug]"; cmd_rebuild "$@" ;;
-        reset)     [ $# -ge 1 ] || die "usage: gfleet reset <config.json> [slug]";   cmd_reset   "$@" ;;
-        remerge)   [ $# -ge 1 ] || die "usage: gfleet remerge <config.json>";    cmd_remerge   "$@" ;;
-        start)     [ $# -ge 1 ] || die "usage: gfleet start <config.json>";      cmd_start     "$@" ;;
-        stop)      [ $# -ge 1 ] || die "usage: gfleet stop <config.json>";       cmd_stop      "$@" ;;
-        restart)   [ $# -ge 1 ] || die "usage: gfleet restart <config.json>";    cmd_restart   "$@" ;;
-        -h|--help|help|"") usage ;;
+        doctor)    cmd_doctor ;;
+        list|ls)   cmd_list ;;
+        install)   [ $# -ge 1 ] || die "usage: gfleet install <config.json>"; cmd_install "$1" ;;
+        uninstall) dispatch_with_config cmd_uninstall "$@" ;;
+        status)    dispatch_with_config cmd_status    "$@" ;;
+        rebuild)   dispatch_with_config cmd_rebuild   "$@" ;;
+        reset)     dispatch_with_config cmd_reset     "$@" ;;
+        remerge)   dispatch_with_config cmd_remerge   "$@" ;;
+        start)     dispatch_with_config cmd_start     "$@" ;;
+        stop)      dispatch_with_config cmd_stop      "$@" ;;
+        restart)   dispatch_with_config cmd_restart   "$@" ;;
+        -h|--help|help) usage ;;
+        "")        if [ -f "$REGISTRY" ] && [ "$(jq '.groups | length' "$REGISTRY")" != "0" ]; then cmd_list; else usage; fi ;;
         *)         usage; exit 1 ;;
     esac
 }
