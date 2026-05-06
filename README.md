@@ -19,8 +19,8 @@ The merged group graph lives at `~/.graphify/groups/<group>.json` (or `%USERPROF
 
 ## Requirements
 
-- **macOS / Linux**: `bash`, `jq`, `git`, Python 3.10+, [`uv`](https://docs.astral.sh/uv/)
-- **Windows**: PowerShell 7+, `git`, Python 3.10+, `uv`
+- **All platforms**: Node 18.19+, `git`, Python 3.10+, [`uv`](https://docs.astral.sh/uv/)
+- macOS uses `launchd` for watchers; Linux uses `systemd --user`; Windows uses Scheduled Tasks. No platform-specific shell scripting required from you.
 
 `gfleet doctor` checks all of these.
 
@@ -28,12 +28,20 @@ The merged group graph lives at `~/.graphify/groups/<group>.json` (or `%USERPROF
 
 ```bash
 git clone https://github.com/<you>/graphify-fleet.git ~/.graphify-fleet
+cd ~/.graphify-fleet && npm install
 ln -s ~/.graphify-fleet/bin/gfleet ~/.local/bin/gfleet      # macOS / Linux
-# or on Windows (PowerShell, one time):
-# $env:Path += ";$HOME\.graphify-fleet\bin"
+# Windows: add ~/.graphify-fleet/bin to PATH, or use `node bin/gfleet ...`
 ```
 
-## Configure
+## Configure — the easy way
+
+```bash
+gfleet wizard
+```
+
+Interactive setup. Detects each repo's stack from `package.json` / `pyproject.toml` / `go.mod`, suggests a slug, asks about watchers / Windsurf / Claude Code, writes the config and offers to install immediately.
+
+## Configure — the manual way
 
 Create a JSON config describing one project group. Multiple groups = multiple config files.
 
@@ -58,17 +66,28 @@ Create a JSON config describing one project group. Multiple groups = multiple co
 
 ## Usage
 
+After `install` (or `wizard`), commands accept the **group name** instead of the config path. Omit the argument entirely to fan out across all registered groups.
+
 ```bash
-gfleet doctor                            # check prerequisites
-gfleet install   ./upvate.fleet.json     # idempotent — safe to re-run
-gfleet uninstall ./upvate.fleet.json     # remove hooks/watchers/configs
-gfleet status    ./upvate.fleet.json     # watcher state + graph node counts
-gfleet rebuild   ./upvate.fleet.json     # force AST rebuild (use after deletions)
-gfleet rebuild   ./upvate.fleet.json upvate-core   # one repo only
-gfleet start     ./upvate.fleet.json     # load watchers
-gfleet stop      ./upvate.fleet.json     # unload watchers
-gfleet restart   ./upvate.fleet.json
-gfleet remerge   ./upvate.fleet.json     # rerun merge-graphs over all repos in group
+gfleet                          # bare = list registered groups
+gfleet doctor                   # check prerequisites
+gfleet wizard                   # interactive setup
+gfleet install <config.json>    # one-time per group
+gfleet list                     # all registered groups + node counts
+
+gfleet status                   # all groups
+gfleet status upvate            # by group name
+gfleet rebuild upvate           # force AST rebuild after deletions
+gfleet rebuild upvate upvate-core   # one repo only
+gfleet reset upvate             # nuke graphify-out/ and rebuild from scratch
+gfleet remerge upvate           # re-merge group graph (no rebuild)
+
+gfleet start  upvate            # load watchers
+gfleet stop   upvate            # unload watchers
+gfleet restart upvate
+
+gfleet uninstall upvate         # remove hooks/watchers/configs (keeps graphify-out)
+gfleet uninstall upvate --purge # also delete each repo's graphify-out/
 ```
 
 ## Multiple groups, one machine
