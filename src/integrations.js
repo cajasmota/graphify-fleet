@@ -166,27 +166,38 @@ export function removeWindsurfFiles(repo) {
     if (cleaned !== cur) writeFileSync(rules, cleaned);
 }
 
-// Global Windsurf MCP entry (one per group, named graphify-<group>)
-const WINDSURF_MCP = join(process.env.HOME ?? '', '.codeium', 'windsurf', 'mcp_config.json');
+// Global Windsurf MCP entry. Windsurf has shipped two locations across versions:
+//   - ~/.codeium/mcp_config.json          (newer / Cascade-era)
+//   - ~/.codeium/windsurf/mcp_config.json (older / standalone Windsurf)
+// We write to both so the right one is picked up regardless of build.
+const WINDSURF_MCP_PATHS = [
+    join(process.env.HOME ?? '', '.codeium', 'mcp_config.json'),
+    join(process.env.HOME ?? '', '.codeium', 'windsurf', 'mcp_config.json'),
+];
 
 export function addWindsurfGlobalMcp(group, groupGraph) {
-    ensureDir(dirname(WINDSURF_MCP));
-    const obj = existsSync(WINDSURF_MCP) ? readJson(WINDSURF_MCP) : {};
-    obj.mcpServers = obj.mcpServers ?? {};
-    obj.mcpServers[`graphify-${group}`] = {
+    const server = {
         command: graphifyPython(),
         args: ['-m', 'graphify.serve', groupGraph],
     };
-    writeJson(WINDSURF_MCP, obj);
-    log.info(`windsurf MCP entry: graphify-${group}`);
+    for (const p of WINDSURF_MCP_PATHS) {
+        ensureDir(dirname(p));
+        const obj = existsSync(p) ? readJson(p) : {};
+        obj.mcpServers = obj.mcpServers ?? {};
+        obj.mcpServers[`graphify-${group}`] = server;
+        writeJson(p, obj);
+    }
+    log.info(`windsurf MCP entry: graphify-${group} (written to ${WINDSURF_MCP_PATHS.length} paths)`);
 }
 
 export function removeWindsurfGlobalMcp(group) {
-    if (!existsSync(WINDSURF_MCP)) return;
-    const obj = readJson(WINDSURF_MCP);
-    if (obj.mcpServers?.[`graphify-${group}`]) {
-        delete obj.mcpServers[`graphify-${group}`];
-        writeJson(WINDSURF_MCP, obj);
+    for (const p of WINDSURF_MCP_PATHS) {
+        if (!existsSync(p)) continue;
+        const obj = readJson(p);
+        if (obj.mcpServers?.[`graphify-${group}`]) {
+            delete obj.mcpServers[`graphify-${group}`];
+            writeJson(p, obj);
+        }
     }
 }
 
