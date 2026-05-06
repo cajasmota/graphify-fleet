@@ -188,13 +188,31 @@ export async function wizard() {
     const features = await ask(() => multiselect({
         message: 'Features (space to toggle)',
         options: [
-            { value: 'watchers',    label: 'File watchers (save-time graph refresh)', hint: 'launchd / systemd / Scheduled Tasks' },
-            { value: 'windsurf',    label: 'Windsurf integration',                    hint: 'workflow + rules + MCP' },
-            { value: 'claude_code', label: 'Claude Code integration',                  hint: 'CLAUDE.md + PreToolUse hook' },
+            { value: 'watchers',    label: 'File watchers (save-time graph refresh)',    hint: 'launchd / systemd / Scheduled Tasks' },
+            { value: 'windsurf',    label: 'Windsurf integration',                       hint: 'workflow + rules + MCP' },
+            { value: 'claude_code', label: 'Claude Code integration',                    hint: 'CLAUDE.md + PreToolUse hook' },
+            { value: 'docs',        label: 'Documentation generation (/generate-docs)',  hint: 'install skill globally + domain Q&A later in IDE' },
         ],
-        initialValues: ['watchers', 'windsurf', 'claude_code'],
+        initialValues: ['watchers', 'windsurf', 'claude_code', 'docs'],
         required: false,
     }));
+
+    // Optional: where group-level docs go (parent folder of repos by default)
+    let groupDocsPath = null;
+    if (features.includes('docs')) {
+        const repoPaths = repos.map(r => r.path);
+        const parents = repoPaths.map(p => resolve(p, '..'));
+        const allSame = parents.every(p => p === parents[0]);
+        const defaultPath = allSame
+            ? join(parents[0], 'docs')
+            : join(HOME, 'Documents', 'Projects', `${group}-docs`);
+
+        const inputPath = await ask(() => text({
+            message: 'Group docs path (parent folder of repos by default; empty to skip group-level docs)',
+            initialValue: defaultPath,
+        }));
+        groupDocsPath = inputPath ? expandPath(cleanPath(inputPath)) : null;
+    }
 
     const configPath = await ask(() => text({
         message: 'Save config to',
@@ -210,6 +228,12 @@ export async function wizard() {
             windsurf:    features.includes('windsurf'),
             claude_code: features.includes('claude_code'),
         },
+        ...(features.includes('docs') ? {
+            docs: {
+                enabled: true,
+                group_docs_path: groupDocsPath,
+            }
+        } : {}),
     };
 
     const absCfg = expandPath(cleanPath(configPath));
@@ -225,6 +249,40 @@ export async function wizard() {
     if (doInstall) {
         outro('starting install');
         await install(absCfg);
+
+        if (features.includes('docs')) {
+            // Install the generate-docs skill globally + create group-docs folder
+            const { skillsInstall } = await import('./skills.js');
+            log.say('');
+            log.head('installing generate-docs skill');
+            skillsInstall();
+
+            if (groupDocsPath) {
+                const { ensureDir, writeJson } = await import('./util.js');
+                const { join } = await import('node:path');
+                ensureDir(groupDocsPath);
+                // Save a stub docs-config so /generate-docs knows the group_docs_path
+                // (domain context will be filled in via /generate-docs --setup-only)
+                const fleetState = process.env.GFLEET_STATE_DIR ?? join(HOME, '.graphify-fleet');
+                const stateDir = join(fleetState, 'groups', group);
+                ensureDir(stateDir);
+                writeJson(join(stateDir, 'docs-config.json'), {
+                    version: 1,
+                    group,
+                    domain: null,           // filled by /generate-docs --setup-only
+                    group_docs_path: groupDocsPath,
+                    module_overrides: {},
+                    stack_overrides: {},
+                    captured_at: null,
+                });
+                log.ok(`group docs path created: ${groupDocsPath}`);
+            }
+
+            log.say('');
+            log.info('Next: open a repo in Claude Code or Windsurf and run:');
+            log.info('  /generate-docs --setup-only       # one-time domain Q&A (LLM seeds answers from code)');
+            log.info('  /generate-docs                     # full doc generation');
+        }
     } else {
         outro(`run later:  gfleet install ${absCfg}`);
     }
