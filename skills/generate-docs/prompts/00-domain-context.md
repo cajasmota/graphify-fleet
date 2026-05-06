@@ -1,8 +1,10 @@
 # Pass 0 — Domain context
 
-**Run only if `~/.graphify-fleet/groups/<group>/docs-config.json` does not exist.**
+**Run if `~/.graphify-fleet/groups/<group>/docs-config.json` is missing OR has `domain: null`** (the wizard creates a stub with `group_docs_path` set but `domain` empty — Pass 0 fills in the domain).
 
-In `--autonomous` mode, fail loudly: "Run `gfleet docs init <group>` first." This pass needs human input that cannot be inferred from code.
+In `--autonomous` mode, fail loudly: "Run `/generate-docs` interactively first to complete domain setup." This pass needs human input that cannot be inferred from code.
+
+After Pass 0 completes successfully, **continue automatically into Pass 1** (Inventory) unless the user passed `--setup-only`. The user shouldn't have to re-invoke the skill just to continue.
 
 ## Your goal
 
@@ -79,9 +81,13 @@ Write `~/.graphify-fleet/groups/<group>/docs-config.json`:
 
 ### 4. Confirm and continue
 
+If a stub config existed (with `group_docs_path` already set), preserve `group_docs_path` in your save — only fill in the `domain` block and update `captured_at`. Don't overwrite `group_docs_path`.
+
 Print: *"Domain context saved. Continuing with inventory pass."*
 
-Then proceed to `prompts/01-inventory.md`.
+If `--setup-only` flag was passed: print *"Setup complete. Run /generate-docs to do the actual generation."* and exit.
+
+Otherwise proceed to `prompts/01-inventory.md`.
 
 ## Re-running this pass
 

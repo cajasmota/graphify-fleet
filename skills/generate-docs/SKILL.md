@@ -57,7 +57,11 @@ Before doing anything, locate and read:
 | `<repo>/docs/.stale.md` | Auto-maintained list of likely-stale sections |
 | `<repo>/docs/.plan.md` | Last run's plan (if exists) |
 
-If `docs-config.json` doesn't exist, you must run **Pass 0** first (domain context Q&A). If the user runs you in `--autonomous` and config is missing, fail loudly with: "Run `gfleet docs init <group>` first."
+If `docs-config.json` doesn't exist OR `docs-config.json` has `domain: null` (stub created by `gfleet wizard`), you must run **Pass 0** first (domain context Q&A). If the user runs you in `--autonomous` and Pass 0 hasn't been completed, fail loudly with: "Run `/generate-docs` interactively first to complete domain setup."
+
+After Pass 0 completes, by default **continue automatically** into Pass 1 (inventory) and the rest of the flow. The user shouldn't have to invoke twice.
+
+Use `--setup-only` only when the user wants to stop after Pass 0 — for example, to review the saved domain config without committing to a full doc generation immediately.
 
 ---
 
@@ -291,8 +295,8 @@ This avoids the auto-amplification trap where the skill cites its own past guess
 
 ## Now: start working
 
-1. Read `prompts/00-domain-context.md` only if `docs-config.json` is missing.
-2. **If `--setup-only` flag is present**: stop here after Pass 0 is complete. Print "Setup complete — run /generate-docs to continue." Exit.
+1. Read `prompts/00-domain-context.md` if `docs-config.json` is missing OR has `domain: null` (stub).
+2. **If `--setup-only` flag is present and Pass 0 just completed**: stop. Print "Setup complete — run /generate-docs to continue." Exit. (Without `--setup-only`, continue automatically into Pass 1.)
 3. Always read `prompts/01-inventory.md` next.
 4. Always read `prompts/02-plan.md` and produce `docs/.plan.md`.
 5. In interactive mode: STOP and ask the user to review the plan. Wait for confirmation.
