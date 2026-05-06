@@ -6,6 +6,26 @@ This file is **also the subagent prompt** when running on Claude Code with paral
 
 ---
 
+## Required reading before writing any file (MANDATORY)
+
+You MUST read these snippets at the start of Pass 4 (or when a subagent is dispatched). They are short, single-purpose, and lock consistency across all subagents:
+
+1. `snippets/writing-style.md` — voice, tense, vocabulary, length targets, what TO write / what NOT to write. **Without this, 20 subagents write in 20 voices.**
+2. `snippets/verification-checklist.md` — the per-artifact completeness checklist you MUST run before marking any file as done. **Without this, gaps slip through as placeholders.**
+3. `snippets/auto-marker-rules.md` — auto/human region rules so re-runs preserve human edits.
+4. `snippets/cross-link-format.md` — how to write cross-repo links via the merged graph.
+5. `snippets/confidence-markers.md` — when to use 🟡 vs 🔴 (do not conflate).
+
+Templates to use as starting structure:
+
+- `output-templates/api-class.md` — for any `api/<unit>.md` file
+- `output-templates/module-readme.md` — for `modules/<name>/README.md`
+- (services, models, flows: use the inline templates in this file's "Concrete file templates" section below — same structure as the explicit templates)
+
+After writing each file, the verification checklist MUST be run before saving. If any item fails: fix in place OR mark 🔴 INCOMPLETE with specific reasons. Never return success on an unverified file.
+
+---
+
 ## Read the plan FIRST
 
 Before writing anything, read `<repo>/docs/.plan.md`. The plan tells you:
