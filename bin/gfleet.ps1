@@ -323,6 +323,53 @@ function Cmd-Rebuild($cfg, $tgt) {
 }
 
 function Cmd-Remerge($cfg) { Load-Config $cfg; & (Join-Path $LocalBin "graphify-fleet-merge-$Group.ps1"); Ok "merged" }
+
+function Cmd-Reset($cfg, $tgt) {
+    Load-Config $cfg
+    foreach ($r in $Repos) {
+        if ($tgt -and $tgt -ne 'all' -and $tgt -ne $r.Slug) { continue }
+        Info "wiping $($r.Path)\graphify-out\"
+        Remove-Item -Recurse -Force (Join-Path $r.Path 'graphify-out') -ErrorAction SilentlyContinue
+        Say "rebuilding $($r.Slug)..."
+        Push-Location $r.Path
+        try { graphify update . } finally { Pop-Location }
+    }
+    & (Join-Path $LocalBin "graphify-fleet-merge-$Group.ps1")
+    Ok "reset complete — group '$Group' regenerated from scratch"
+    Info "for full LLM extraction run /graphify . in Claude Code or Windsurf per repo"
+}
+
+function Cmd-Help {
+    @"
+gfleet $Version — orchestrate graphify across multiple related repos.
+
+USAGE
+  gfleet.ps1 <command> [config.json] [slug]
+
+SETUP
+  doctor                           check prerequisites
+  install   <config.json>          set up fleet group (idempotent)
+  uninstall <config.json>          remove watchers, hooks, configs, group graph
+
+INSPECT
+  status    <config.json>          watcher state + node/edge counts
+  help                             show this message
+
+REBUILD
+  rebuild   <config.json> [slug]   force AST rebuild (after deletions)
+  reset     <config.json> [slug]   wipe graphify-out/ and rebuild from scratch
+  remerge   <config.json>          re-merge group graph (no rebuild)
+
+WATCHERS
+  start     <config.json>          load watchers (Scheduled Tasks)
+  stop      <config.json>          unload watchers
+  restart   <config.json>
+
+EXAMPLES
+  gfleet.ps1 install   C:\configs\upvate.fleet.json
+  gfleet.ps1 reset     C:\configs\upvate.fleet.json upvate-core
+"@
+}
 function Cmd-Start($cfg)   { Load-Config $cfg; foreach ($r in $Repos) { Install-WatcherWindows $r.Path $r.Slug }; Ok "watchers loaded" }
 function Cmd-Stop($cfg)    { Load-Config $cfg; foreach ($r in $Repos) { Uninstall-WatcherWindows $r.Slug; Info "stopped $($r.Slug)" }; Ok "watchers stopped" }
 function Cmd-Restart($cfg) { Cmd-Stop $cfg; Cmd-Start $cfg }
@@ -333,9 +380,13 @@ switch ($Command) {
     'uninstall' { if (-not $ConfigPath) { Err "usage: gfleet.ps1 uninstall <config.json>" }; Cmd-Uninstall $ConfigPath }
     'status'    { if (-not $ConfigPath) { Err "usage: gfleet.ps1 status <config.json>" };     Cmd-Status    $ConfigPath }
     'rebuild'   { if (-not $ConfigPath) { Err "usage: gfleet.ps1 rebuild <config.json> [slug]" }; Cmd-Rebuild $ConfigPath $Target }
+    'reset'     { if (-not $ConfigPath) { Err "usage: gfleet.ps1 reset <config.json> [slug]" };   Cmd-Reset   $ConfigPath $Target }
     'remerge'   { if (-not $ConfigPath) { Err "usage: gfleet.ps1 remerge <config.json>" };    Cmd-Remerge   $ConfigPath }
     'start'     { if (-not $ConfigPath) { Err "usage: gfleet.ps1 start <config.json>" };      Cmd-Start     $ConfigPath }
     'stop'      { if (-not $ConfigPath) { Err "usage: gfleet.ps1 stop <config.json>" };       Cmd-Stop      $ConfigPath }
     'restart'   { if (-not $ConfigPath) { Err "usage: gfleet.ps1 restart <config.json>" };    Cmd-Restart   $ConfigPath }
-    default     { Say "gfleet $Version — see README.md for usage" }
+    'help'      { Cmd-Help }
+    '-h'        { Cmd-Help }
+    '--help'    { Cmd-Help }
+    default     { Cmd-Help }
 }

@@ -586,6 +586,27 @@ cmd_remerge() {
     ok "merged $GROUP_GRAPH"
 }
 
+cmd_reset() {
+    # Wipe graphify-out (graph + cache) for one or all repos in the group, then
+    # rebuild from scratch and remerge. Use when you want a truly clean AST
+    # extraction (e.g. after large refactors, switched stacks, or weird state).
+    local config="$1" target="${2:-all}"
+    load_config "$config"
+    local i
+    for i in "${!REPO_SLUGS[@]}"; do
+        local slug="${REPO_SLUGS[$i]}"
+        if [ "$target" != "all" ] && [ "$target" != "$slug" ]; then continue; fi
+        local repo="${REPO_PATHS[$i]}"
+        info "wiping $repo/graphify-out/"
+        rm -rf "$repo/graphify-out"
+        say "rebuilding $slug ($repo)..."
+        ( cd "$repo" && graphify update . 2>&1 | tail -3 )
+    done
+    "$LOCAL_BIN/graphify-fleet-merge-${GROUP}"
+    ok "reset complete — group '$GROUP' regenerated from scratch"
+    info "for full LLM extraction (docs, wiki, 'why' comments) run /graphify . in Claude Code or Windsurf per repo"
+}
+
 cmd_start() {
     local config="$1"
     load_config "$config"
@@ -606,16 +627,44 @@ usage() {
     cat <<EOF
 gfleet $GFLEET_VERSION — orchestrate graphify across multiple related repos.
 
-Usage:
-  gfleet doctor                          check prerequisites
-  gfleet install   <config.json>         set up fleet group (idempotent)
-  gfleet uninstall <config.json>         remove watchers/hooks/configs
-  gfleet status    <config.json>         watcher state + graph stats
-  gfleet rebuild   <config.json> [slug]  force AST rebuild (use after deletions)
-  gfleet remerge   <config.json>         re-merge group graph from current per-repo graphs
-  gfleet start     <config.json>         load watchers
-  gfleet stop      <config.json>         unload watchers
-  gfleet restart   <config.json>
+USAGE
+  gfleet <command> [config.json] [slug]
+
+SETUP
+  doctor                           check prerequisites (bash, jq, git, uv, graphify)
+  install   <config.json>          set up fleet group (idempotent — safe to re-run)
+  uninstall <config.json>          remove watchers, hooks, configs, group graph
+
+INSPECT
+  status    <config.json>          watcher PIDs + node/edge counts of merged graph
+  help                             show this message
+
+REBUILD
+  rebuild   <config.json> [slug]   force AST rebuild (use after deletions);
+                                   bypasses graphify's shrink protection
+  reset     <config.json> [slug]   wipe graphify-out/ entirely and rebuild from scratch
+                                   (use when caches are stale or after refactors)
+  remerge   <config.json>          re-merge group graph from current per-repo graphs
+                                   (no rebuild — use if only the merge file is missing)
+
+WATCHERS
+  start     <config.json>          load watchers (launchd / systemd-user / Scheduled Tasks)
+  stop      <config.json>          unload watchers
+  restart   <config.json>
+
+EXAMPLES
+  gfleet install   ~/configs/upvate.fleet.json
+  gfleet status    ~/configs/upvate.fleet.json
+  gfleet reset     ~/configs/upvate.fleet.json upvate-core   # one repo
+  gfleet uninstall ~/configs/upvate.fleet.json
+
+CONFIG FORMAT
+  See examples/upvate.fleet.json. Each config defines one "group" of related
+  repos. Multiple groups → multiple configs → fully isolated merged graphs at
+  ~/.graphify/groups/<group>.json.
+
+DOCS
+  https://github.com/<you>/graphify-fleet
 EOF
 }
 
@@ -628,6 +677,7 @@ main() {
         uninstall) [ $# -ge 1 ] || die "usage: gfleet uninstall <config.json>"; cmd_uninstall "$@" ;;
         status)    [ $# -ge 1 ] || die "usage: gfleet status <config.json>";     cmd_status    "$@" ;;
         rebuild)   [ $# -ge 1 ] || die "usage: gfleet rebuild <config.json> [slug]"; cmd_rebuild "$@" ;;
+        reset)     [ $# -ge 1 ] || die "usage: gfleet reset <config.json> [slug]";   cmd_reset   "$@" ;;
         remerge)   [ $# -ge 1 ] || die "usage: gfleet remerge <config.json>";    cmd_remerge   "$@" ;;
         start)     [ $# -ge 1 ] || die "usage: gfleet start <config.json>";      cmd_start     "$@" ;;
         stop)      [ $# -ge 1 ] || die "usage: gfleet stop <config.json>";       cmd_stop      "$@" ;;
