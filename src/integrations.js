@@ -186,15 +186,23 @@ export function removeMcpEntry(repo) {
 }
 
 export function removeWindsurfFiles(repo) {
-    const wf = join(repo, '.windsurf', 'workflows', 'graphify.md');
-    try { unlinkSync(wf); } catch {}
+    // Remove all workflow files we may have written
+    for (const name of ['graphify.md', 'generate-docs.md']) {
+        try { unlinkSync(join(repo, '.windsurf', 'workflows', name)); } catch {}
+    }
     try { rmdirSync(join(repo, '.windsurf', 'workflows')); } catch {}
     try { rmdirSync(join(repo, '.windsurf')); } catch {}
-    const rules = join(repo, '.windsurfrules');
-    if (!existsSync(rules)) return;
-    const cur = readFileSync(rules, 'utf8');
-    const cleaned = cur.replace(/\n*## graphify\n[\s\S]*?(?=\n## |\n*$)/, '');
-    if (cleaned !== cur) writeFileSync(rules, cleaned);
+    // Strip from rules files: marker block (new) + thin "## graphify" (legacy)
+    for (const f of [join(repo, '.windsurfrules'), join(repo, 'CLAUDE.md'), join(repo, 'AGENTS.md')]) {
+        if (!existsSync(f)) continue;
+        let cur = readFileSync(f, 'utf8');
+        const before = cur;
+        // marker-wrapped block
+        cur = cur.replace(/\n*<!-- gfleet:graphify-rules:start -->[\s\S]*?<!-- gfleet:graphify-rules:end -->\n*/g, '\n');
+        // legacy thin "## graphify" section (terminate at next H2 or EOF)
+        cur = cur.replace(/\n*## graphify\b[\s\S]*?(?=\n## |\n*$)/g, '\n');
+        if (cur !== before) writeFileSync(f, cur);
+    }
 }
 
 // Global Windsurf MCP entry. Windsurf has shipped two locations across versions:
