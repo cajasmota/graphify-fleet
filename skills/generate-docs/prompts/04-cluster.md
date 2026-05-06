@@ -4,27 +4,47 @@ The expensive pass. Per-module, write the artifact pages decided in the plan.
 
 This file is **also the subagent prompt** when running on Claude Code with parallelism. The orchestrator dispatches one subagent per module-artifact pair (or per module, depending on size), passing this prompt + module-specific data + the stack convention.
 
-## Inputs you'll receive (per cluster)
+---
 
-When invoked as a subagent OR when running this pass yourself, you'll have:
+## Read the plan FIRST
 
-- `module` — the module entry from `.inventory.json` (name, path, god_nodes, artifacts_present, etc.)
-- `stack` — the repo's stack
-- `domain_context` — from `docs-config.json`
-- `plan_for_module` — the section from `.plan.md` listing which files to produce
-- `repo_root` — absolute path
-- `group_repos` — list of other repos in the group with their paths (for cross-repo links)
-- `merged_graph_path` — `~/.graphify/groups/<group>.json` (for cross-repo queries)
+Before writing anything, read `<repo>/docs/.plan.md`. The plan tells you:
 
-## Files you must produce
+- The folder shape per module (FLAT / FLAT-WITH-SPLITTING / SUBFOLDER)
+- Exactly which files to create and their boundaries (one class per file in most cases)
+- Which artifacts get dedicated files vs fold into README
 
-Read `conventions/<stack>.md` to know the canonical artifact set. The plan tells you which artifacts get dedicated files vs are folded into README.
+**You must follow the plan's file list verbatim.** Do not collapse multiple per-class files back into one shared file. Do not skip files because they "look small." If the plan was wrong, fix the plan and restart Pass 4 — don't deviate silently.
 
-Always produce `<repo>/docs/modules/<module>/README.md`. Then per the plan, zero or more of:
-- `api.md`, `models.md`, `services.md`, `repositories.md`, `serializers.md`, `permissions.md`, `tasks.md`, `signals.md`, `admin.md`, `flows.md`
-- (frontend) `pages.md`, `components.md`, `hooks.md`, `stores.md`, `services.md`, `types.md`
-- (mobile) `screens.md`, `components.md`, `hooks.md`, `stores.md`, `services.md`, `native.md`, `platform-notes.md`
-- (go) `handlers.md`, `domain.md`, `storage.md`, `transport.md`, `dependencies.md`, `deployment.md`
+---
+
+## R0 — One file = one logical unit
+
+Per the plan, each `api.<unit>.md` (or `handlers.<unit>.md`, `components.<unit>.md`, etc.) covers **exactly one** ViewSet / controller class / hook file / handler group. This is the structural fix for the placeholder problem.
+
+Before writing the file:
+
+1. Identify the unit (the class/handler-group name)
+2. List **every public method/action/route** on that unit explicitly. This is your completeness checklist.
+3. Read the *whole file* (or the whole class if other classes share the file) per R1 below.
+4. Document every item on the checklist or mark explicit 🔴 with the unread item names. Never write a vague "N additional methods" placeholder.
+
+---
+
+## R1 — Read the entire unit before writing
+
+**Read budget by file size**:
+
+| Source file size | Strategy |
+|------------------|----------|
+| < 300 LOC | Read the whole file in one pass before writing anything |
+| 300-800 LOC | Two passes: (1) structure scan (class declarations + method signatures), (2) full body read of the class being documented |
+| 800-2000 LOC | Read every line of the class being documented in this file. For other classes that share the file, read signatures only. |
+| > 2000 LOC | Same as above. If the plan didn't already split this further, **flag the plan as wrong** and split it via 🔴 in the plan's "Open questions" section before continuing. |
+
+If you fail to complete the full read because of context budget, **do not write a summary that hides this**. Mark the file 🔴 INCOMPLETE per `snippets/confidence-markers.md` with the specific unread method names.
+
+---
 
 ## What "deep dive" means concretely
 
@@ -47,15 +67,113 @@ Documentation must be **detailed enough to explain how a report is generated, wh
   - Mermaid flowchart for >3 branches.
 
 - For services orchestrating multiple components: mermaid sequence diagram.
-  - Actor → Service → Model → External (e.g., User → InspectionService → Inspection model → S3 → Notification queue)
 
 - For state machines (status fields with multiple values): mermaid stateDiagram.
 
-- For complex types/models with nested relationships: ER-style mermaid diagram.
+---
+
+## R5 — Non-triviality checklist for every endpoint/handler
+
+The earlier failure mode: ViewSet endpoints were treated as boilerplate ("method, path, one-liner") and got shallow docs even when they hid real complexity.
+
+**For every endpoint/route/handler you document, ask these questions before writing the description.** If any answer is non-trivial, it MUST appear in the documentation:
+
+| Question | Non-trivial if... |
+|----------|-------------------|
+| What filters the queryset / what conditions gate the read? | More than `filter(group=group)` — any business condition, subquery, exclusion, role-based scoping |
+| What are the counter / aggregation semantics? | Units being counted are not what the field name implies (e.g. device counts returned as "proposal counts") |
+| What does this write action do beyond saving the record? | Creates related records, sends emails, fires signals, enforces consistency rules, invalidates caches |
+| Is there a fallback or dual-path strategy? | Union queries, conditional logic branching on input params, year-boundary handling, cache vs DB fallback |
+| Are there non-obvious parameter interactions? | Params that change the query strategy entirely (e.g. `proposal_status=renew` triggers completely different queryset logic) |
+| Are there model-state preconditions that gate behaviour? | Active devices must exist; EmailTemplate record must exist; user must have specific `types` flag |
+| What happens on errors / missing data? | 404 vs 400 vs silent return; partial success states; transactional rollback |
+
+**Concrete contrast:**
+
+❌ Insufficient (current failure mode):
+```markdown
+### GET /api/v1/proposals/?proposal_status=renew
+List proposals for the requesting group.
+```
+
+✅ Required depth:
+```markdown
+### GET /api/v1/proposals/?proposal_status=renew
+
+Returns contracts eligible for renewal for `year`. **Requires `year` param.**
+
+Uses a **dual-queryset union** (deliberate; see [flows/renewal-strategy.md](../flows/renewal-strategy.md)):
+- Group 1: contracts with `proposal_status='renew'`, `status='proposal'`, `contract_year=year`
+- Group 2 (fallback): contracts whose `end_date` fell in `year-1` and have no current-year renewal yet — prevents buildings from disappearing from the renewal queue when their prior contract expires before a new one is created.
+
+Results are serialized in parallel via `ThreadPoolExecutor`.
+
+**Why this matters**: passing `proposal_status=renew` is **not a simple status filter** — it switches the entire query strategy. A developer assuming filter-only behaviour will get unexpected results.
+```
+
+---
+
+## R6 — Required sections for every endpoint
+
+The current `api.md` template shows only happy-path request/response. That's insufficient. Every endpoint section must include:
+
+```markdown
+### <METHOD> <path>
+
+<1-3 sentences: what it does in domain terms, including any non-obvious behaviour from R5 checklist>
+
+**Auth**: <permission classes / roles>
+
+**Path / query params:**
+- `param_name` (type, required/optional) — what it does. **If absent**: what happens. **If changes execution path**: explain how.
+  Example: `proposal_status=renew` switches to dual-queryset strategy (see Alternate flows).
+
+**Request body** (if applicable):
+```json
+{ ... }
+```
+Per-field validation rules.
+
+**Alternate flows** (if any param combination causes fundamentally different behaviour):
+- `view_all=true` vs default — returns assigned + available users vs assigned only
+- `proposal_status=renew` — switches to dual-queryset union (see above)
+
+**Preconditions / gating** (model-state conditions that must be true):
+- Active devices must exist on the building (else `POST /proposals/` returns 400)
+- EmailTemplate record must exist for `(group, jurisdiction)` (else email send is silently skipped)
+
+**Response 200** (or 201, etc.):
+```json
+{ ... }
+```
+
+**Response 4xx/5xx**:
+- 400 — when `year` param missing or invalid
+- 404 — when referenced `contract_id` doesn't exist
+- 403 — when user lacks `IsClientOwner` permission
+- 409 — when concurrent capacity check fails (only if applicable)
+
+**Side effects**:
+- Creates `ContractNote` with `author=request.user, system=True` (for cancel)
+- Auto-assigns all active building devices to the new contract
+- Auto-adds users with `types='contract_proposals'` as recipients
+- Fires `inspection.created` signal
+- Queues `send_invite` celery task
+
+**Handler**: [`<ClassName>.<method>`](../../<source-path>#L<line>)
+**Service**: [`<ServiceClass>.<method>`](services.md#<anchor>)
+**Cross-repo callers** (from merged graph):
+- Mobile: [`<func>`](<rel-path>#<anchor>)
+- Frontend: [`<hook>`](<rel-path>#<anchor>)
+```
+
+If any section truly doesn't apply (e.g. GET endpoints have no request body), omit the heading. Don't write "N/A" placeholders.
+
+---
 
 ## Concrete file templates
 
-### `modules/<name>/README.md`
+### Module `README.md` (always)
 
 ```markdown
 <!-- docs:auto -->
@@ -63,227 +181,229 @@ Documentation must be **detailed enough to explain how a report is generated, wh
 
 <!-- auto:start id=summary -->
 *One sentence in domain terms — what business capability does this module own?*
-
-E.g., "Owns the inspection lifecycle from creation through publication of results."
 <!-- auto:end -->
 
 <!-- auto:start id=responsibilities -->
 ## Responsibilities
 
-What this module owns:
-- ...
-- ...
-
-What this module does NOT own (with pointers):
-- Authentication → see `cross-cutting/permissions.md`
-- Billing of inspection fees → see `modules/billing/`
+What this module owns: ...
+What this module does NOT own: ... → see other modules / cross-cutting
 <!-- auto:end -->
 
 <!-- auto:start id=key-types -->
 ## Key types
 
-The 3-5 most important domain entities exposed by this module. One paragraph each.
-
-### `Inspection`
-The central entity. An Inspection has a status (`scheduled` → `in_progress` →
-`complete` | `cancelled`), is owned by a Client and assigned to an Inspector,
-and produces a Result on completion.
-See [models.md](models.md) for fields and relationships.
-
-### `Inspector`
-...
+3-5 most important domain entities. One paragraph each.
 <!-- auto:end -->
 
 <!-- auto:start id=public-surface -->
 ## Public surface
 
 What other modules consume from here:
+- HTTP API → [api/index.md](api/index.md)  (or [api.md](api.md) for FLAT modules)
+- Service classes → [services.md](services.md)
+- Models → [models.md](models.md)
+- Permission classes → [permissions.md](permissions.md) or stub linking to cross-cutting
+- Celery tasks (folded if <5)
 
-- HTTP API (12 endpoints) → [api.md](api.md)
-- Service classes (8 methods) → [services.md](services.md)
-- Models (5) → [models.md](models.md)
-- Permission classes (3) → [permissions.md](permissions.md)
-- Celery tasks (2 — folded below)
-
-### Tasks (2)
-
-Two background tasks live in this module (folded here because there are <5):
-
-- `send_inspection_reminder(inspection_id)` — fires 24h before scheduled time. ...
-- `cleanup_orphan_attachments()` — daily; removes uploaded photos for cancelled inspections.
+(For folded artifacts with <5 items, list them here with brief notes.)
 <!-- auto:end -->
 
 <!-- auto:start id=consumers -->
-## Consumers (other modules that use this one)
+## Consumers (other modules using this one)
 
-Inferred from imports:
-- `billing` — calls `InspectionService.get_completed_for_client()`
-- `notifications` — listens for inspection.completed signal
-- `users` — references InspectionAssignment in user dashboard
+Inferred from imports + cross-repo graph queries.
 <!-- auto:end -->
 
 <!-- auto:start id=upstream -->
-## Upstream (modules this one depends on)
-
-- `auth` — for permission checks
-- `users` — for inspector + client lookups
-- `clients` — for property and contract data
+## Upstream (modules this depends on)
 <!-- auto:end -->
 
 <!-- auto:start id=read-next -->
 ## Read next
-
-- API surface: [api.md](api.md)
-- Data model: [models.md](models.md)
-- Business logic: [services.md](services.md)
-- Permission rules: [permissions.md](permissions.md)
-- Ops behavior: [tasks.md](tasks.md)
 <!-- auto:end -->
 ```
 
-### `modules/<name>/api.md` (when present)
+### `api/index.md` for SUBFOLDER modules (and FLAT-WITH-SPLITTING with multiple classes)
 
 ```markdown
 <!-- docs:auto -->
-# <Module> — API
+# <Module> — API index
 
 <!-- auto:start id=summary -->
-N endpoints. Mounted at `<base path>`.
-Authentication: <inferred from urls/views/decorators>.
+This module exposes <N> ViewSet/controller classes mounted at `<base path>`:
 <!-- auto:end -->
 
-<!-- auto:start id=endpoints -->
-## Endpoints
+<!-- auto:start id=units -->
+## Classes
 
-### POST `/api/v1/inspections/`
+| Class | Purpose | Doc |
+|-------|---------|-----|
+| `ContractViewSet` | Contract CRUD + lifecycle actions | [contract.md](contract.md) |
+| `ProposalViewSet` | Proposal listing, counting, renewal strategy | [proposal.md](proposal.md) |
+| `UserContractViewSet` | User-side contract assignment views | [user-contract.md](user-contract.md) |
+| `ContractFileViewSet` | File upload/management | [contract-file.md](contract-file.md) |
+<!-- auto:end -->
 
-Create a new inspection.
+<!-- auto:start id=mounting -->
+## URL mounting
 
-**Auth**: `IsAuthenticated` + `IsClientOwnerOrInspector`
-**Permission**: `inspections.add_inspection`
+Reads `urls.py` to show actual base paths and registration:
+<!-- auto:end -->
+```
+
+### `api/<unit>.md` (e.g. `api/contract.md`) — one file per ViewSet
+
+```markdown
+<!-- docs:auto -->
+# ContractViewSet
+
+<!-- auto:start id=summary -->
+*What this ViewSet owns + which models it operates on. One paragraph.*
+
+Source: [`core/contracts/views/contract_viewset.py:<line>`](../../../core/contracts/views/contract_viewset.py#L<line>)
+Auth: ...
+<!-- auto:end -->
+
+<!-- auto:start id=actions-checklist -->
+## Action inventory (completeness checklist)
+
+This ViewSet has 15 public actions. All must appear below. If you see this
+list and any item below does not have a corresponding section, the file is
+INCOMPLETE — re-run `/generate-docs --section <this-file>`.
+
+- [ ] `list` — paginated contract list
+- [ ] `retrieve`
+- [ ] `create`
+- [ ] `update`
+- [ ] `partial_update`
+- [ ] `destroy`
+- [ ] `cancel` (custom)
+- [ ] `get_extras` (custom)
+- [ ] `devices` (custom)
+- [ ] `assigned_devices` (custom)
+- [ ] `assign_devices` (custom)
+- [ ] `assigned_contacts` (custom)
+- [ ] `assign_contacts` (custom)
+- [ ] `assigned_contracts` (custom)
+- [ ] `create_note`, `delete_note`, `get_notes` (custom)
+<!-- auto:end -->
+
+<!-- auto:start id=actions -->
+## Actions
+
+### GET `/api/v1/contracts/`
+... full per-R6 template ...
+
+### POST `/api/v1/contracts/`
+... full per-R6 template ...
+
+### PUT `/api/v1/contracts/{id}/cancel/`
+
+Cancels a contract. Sets `status='cancelled'`, `end_date=cancel_date`. **Side effect**: auto-creates a system `ContractNote` with `author=request.user, system=True` recording the cancellation reason.
+
+**Path params**: `id` (int, required) — Contract ID.
 
 **Request body**:
 ```json
-{
-  "client_id": 12,
-  "scheduled_at": "2026-06-15T10:00:00Z",
-  "property_id": 34,
-  "inspector_id": 7
-}
+{ "cancel_date": "YYYY-MM-DD", "reason": "string" }
 ```
 
-**Validation**:
-- `scheduled_at` must be in the future and within client's active contract window
-- `inspector_id` must have capacity for that day (see [services.md](services.md#assign-inspector))
-- 🟡 *behavior on race condition with capacity unclear from code — verify*
+**Preconditions**: contract status must be `active` or `proposal` (else 409).
 
-**Response 201**:
-```json
-{ "id": 401, "status": "scheduled", ... }
-```
+**Response 200**: serialized contract with new status.
+
+**Response 4xx**:
+- 404 — contract not found
+- 409 — contract already cancelled or completed
 
 **Side effects**:
-- Inspection created in DB (`status='scheduled'`)
-- `inspection.created` signal fired (notifications module subscribes)
-- Calendar invite queued (celery task `send_inspection_invite`)
+- `ContractNote.objects.create(contract=..., author=user, system=True, body=reason)`
 
-**Handler**: [`InspectionViewSet.create`](../../../core/inspections/api.py#L42)
-**Service**: [`InspectionService.create_inspection`](services.md#create-inspection)
+**Handler**: [`ContractViewSet.cancel`](../../../core/contracts/views/contract_viewset.py#L<line>)
 
-**Cross-repo callers**:
-- Mobile: [`createInspection` service](../../../../../core-mobile/docs/modules/inspections/services.md#createinspection)
-- Frontend: [`useCreateInspection` hook](../../../../../upvate_core_frontend/docs/modules/inspections/hooks.md#usecreateinspection)
-
----
-
-### GET `/api/v1/inspections/{id}/`
-
-...
-
+(continue for every action on the checklist)
 <!-- auto:end -->
 ```
 
-### `modules/<name>/services.md` (when present)
+### `flows/<flow-name>.md` (one per major flow)
 
 ```markdown
 <!-- docs:auto -->
-# <Module> — Services
+# Renewal strategy
 
 <!-- auto:start id=summary -->
-Service-layer methods that encapsulate business logic. Called by the API
-layer and by other modules.
+*Why renewals use a dual-queryset union and what problem it solves.*
 <!-- auto:end -->
 
-<!-- auto:start id=services -->
-## `InspectionService`
+<!-- auto:start id=problem -->
+## The problem this solves
 
-[`core/inspections/services.py:1`](../../../core/inspections/services.py)
+Year-transition gap: when a contract's `end_date` falls in year N-1 but no year-N renewal proposal has been created yet, the building disappears from the renewal queue under a naive filter. The dual queryset closes the gap.
+<!-- auto:end -->
 
-Coordinates inspection lifecycle operations. Stateless; consumes models and
-external integrations.
-
-### `create_inspection(client_id, scheduled_at, ..., *, by_user) -> Inspection`
-
-[`core/inspections/services.py:23`](../../../core/inspections/services.py#L23)
-
-Creates a new inspection record after validating capacity and contract window.
-
-**Why a service method, not just `Inspection.objects.create()`**: needs to
-coordinate inspector capacity check + contract validation + signal fire +
-calendar invite — these belong together, not in views.
-
-**Steps**:
-1. Validate `client.has_active_contract(scheduled_at)`. Raises `ContractError`
-   if not. (Why this check is here and not in serializer: ...)
-2. Validate `inspector.has_capacity(scheduled_at.date())`. The capacity check
-   walks all assignments for that day and checks against `Inspector.daily_capacity`.
-   See [`Inspector.has_capacity`](models.md#inspector).
-3. Inside a transaction:
-   - Create the `Inspection` row with `status='scheduled'`
-   - Create the `InspectionAssignment` row linking inspector
-   - Fire `inspection.created` signal
-4. Outside the transaction (so signal handlers don't block):
-   - Queue celery task `send_inspection_invite` with the new ID
-
-**Returns**: the new `Inspection` (refreshed from DB after signal handlers).
-
-**Edge cases handled**:
-- Concurrent capacity check via `select_for_update` on `Inspector` row.
-- Contract expiring exactly at `scheduled_at` is treated as valid.
-- 🟡 *unclear whether timezone of `scheduled_at` is normalized — verify*.
+<!-- auto:start id=algorithm -->
+## How it works
 
 ```mermaid
-sequenceDiagram
-    participant V as ViewSet
-    participant S as InspectionService
-    participant C as Client
-    participant I as Inspector
-    participant DB as Database
-    participant Q as Celery
-    V->>S: create_inspection(...)
-    S->>C: has_active_contract(date)
-    C-->>S: True
-    S->>I: has_capacity(date)  [SELECT FOR UPDATE]
-    I-->>S: True
-    S->>DB: BEGIN
-    S->>DB: INSERT inspection, assignment
-    S->>S: signal: inspection.created
-    S->>DB: COMMIT
-    S->>Q: send_inspection_invite.delay(id)
-    S-->>V: Inspection
+flowchart TD
+  Start[GET /proposals/?proposal_status=renew&year=Y] --> Q1[Group 1: contracts where<br/>proposal_status='renew'<br/>status='proposal'<br/>contract_year=Y]
+  Start --> Q2[Group 2: contracts where<br/>end_date in Y-1<br/>no Y renewal exists]
+  Q1 --> Union[UNION]
+  Q2 --> Union
+  Union --> Serialize[ThreadPoolExecutor parallel serialize]
+  Serialize --> Resp[Response]
+```
+
+Step-by-step:
+1. ...
+2. ...
+<!-- auto:end -->
+
+<!-- auto:start id=code-refs -->
+## Code references
+
+- Main entry: [`ProposalViewSet.list`](../api/proposal.md#get-apiv1proposals)
+- Helper: ...
+<!-- auto:end -->
 ```
 
 ---
 
-### `assign_inspector(inspection_id, inspector_id)` ...
+## R3 — Persist discoveries via `graphify save-result` (per-module, NOT batch)
 
-...
-<!-- auto:end -->
+The earlier failure mode: zero `save-result` calls during Pass 4 across 25 modules — everything batched to session end and most was lost.
+
+**The new rule: save-result IMMEDIATELY after completing each module's documentation**, not at session end. If the session is interrupted, the per-module saves already committed survive.
+
+After completing each module, before moving to the next:
+
+```bash
+# For each non-trivial finding discovered during this module's source reads:
+graphify save-result \
+  --question "<question phrased as if asked of the graph>" \
+  --answer   "<2-5 sentence dense factual summary>" \
+  --type     <query|path_query|explain> \
+  --nodes    "<node-1>" "<node-2>" ...
 ```
 
-### Other artifact files
+What to save (one or more per module):
+- Cross-repo HTTP boundaries (mobile fn → backend handler) → `--type path_query`
+- Emergent multi-file behaviours (status changes driven by multiple files) → `--type query`
+- Complex queries you walked through → `--type query`
+- Architectural patterns identified (registry, strategy, observer, dual-queryset) → `--type explain`
+- Non-obvious side effects you documented → `--type query`
 
-Apply the same pattern: 1-3 paragraphs per significant item, code refs, mermaid where useful, `🟡` for guesses, cross-repo links via the merged graph.
+What NOT to save (skip):
+- Trivial structural facts (which class is in which file) — graph already has these
+- Single-line summaries of public methods — those are in the doc page itself
+- Anything you didn't actually verify by reading code
+
+**Track count per module. Report in the run summary by category.**
+
+Skip count: also track. If a module produced 0 save-results, that's suspicious — either the module is genuinely simple (only structural facts) or you missed depth opportunities.
+
+---
 
 ## Cross-repo link resolution
 
@@ -291,35 +411,12 @@ For each external API/service call you find:
 
 1. Check the merged group graph (`~/.graphify/groups/<group>.json`) for a node matching the URL/method.
 2. If found, get the `repo` field on that node and the `source_file`.
-3. Compute relative path from current doc to `<that-repo-root>/docs/modules/<that-module>/api.md`.
+3. Compute relative path from current doc to `<that-repo-root>/docs/modules/<that-module>/api/<unit>.md` (per the new SUBFOLDER shape; or `api.md` if FLAT).
 4. Include an anchor `#<verb>-<path-as-slug>` (will be verified in pass 8).
 
 If not found in graph: write the bare path/URL as text and add to `.cross-link-todo.md`.
 
-## Persist discoveries via `graphify save-result`
-
-After tracing any of the following during this pass, run `graphify save-result` (Bash tool) so the finding becomes graph-queryable for all future sessions:
-
-- **Cross-repo HTTP boundary** (mobile/frontend → backend): `--type path_query`, include both the caller node label and the handler node label in `--nodes`.
-- **Emergent behavior** (status change driven by multiple files, no single anchor): `--type query`.
-- **Complex query walkthrough** (you explained a multi-join ORM query or raw SQL): `--type query`.
-- **Architectural pattern in this module** (registry, strategy, observer, command bus): `--type explain`.
-
-Format the `--question` as something an engineer might actually ask the graph later (not just a heading). The `--answer` should be a 2-5 sentence dense factual summary — *not* the full doc page; the doc page lives at the file path, the saved result is for queries that may not even know the doc exists.
-
-Example after documenting `InspectionService.create_inspection`:
-
-```bash
-graphify save-result \
-  --question "How is inspector capacity enforced when scheduling an inspection?" \
-  --answer   "InspectionService.create_inspection acquires SELECT FOR UPDATE on the inspector row, calls Inspector.has_capacity(date) which counts existing assignments against Inspector.daily_capacity, then commits. Race-safe across concurrent requests on the same inspector. Concurrent requests on different inspectors do not block each other." \
-  --type     query \
-  --nodes    "InspectionService.create_inspection" "Inspector.has_capacity" "InspectionAssignment"
-```
-
-Skip `save-result` for trivial structural facts (which class is in which file). Use it specifically for findings the static graph cannot encode.
-
-Track count of save-results in this pass; report in run summary.
+---
 
 ## Idempotence
 
@@ -328,7 +425,9 @@ Before writing each file:
 2. If file exists with `<!-- docs:auto -->`: extract human:* blocks, regenerate auto:* blocks with new content, splice human blocks back in.
 3. If new file: write fresh.
 
-After writing, update `docs/.metadata.json` with the file's source SHAs.
+After writing, update `docs/.metadata.json` with the file's source SHAs. **Never write a vague placeholder if you ran out of budget — mark 🔴 INCOMPLETE with named unread items instead.**
+
+---
 
 ## Skip rules (re-runs)
 
@@ -338,19 +437,31 @@ Before processing a module:
 3. If unchanged: skip module entirely. Print `<module>: unchanged, skipped`.
 4. If `--force` flag: ignore fingerprint, regenerate.
 
+---
+
 ## Token discipline
 
-You can read whole files for god nodes that are dense and small (<200 lines).
-For large files, use Read with offset/limit to read only the methods you're documenting.
+You can read whole files for units that are dense and small (<300 lines).
+For 300-800 LOC, use Read with offset/limit for non-target classes.
+For >800 LOC, the plan should have already split the work — if it didn't, fix the plan and restart.
 Never read the whole graph.json — query it via specific node lookups.
+
+If you hit context budget mid-class:
+1. **STOP** writing the current file.
+2. Mark it 🔴 INCOMPLETE per `snippets/confidence-markers.md` with the unread method names.
+3. Save what's already complete via `save-result`.
+4. Move to the next module (don't try to squeeze more into a degraded context).
+
+---
 
 ## After all modules complete
 
-Print a one-line summary per module:
+Print one line per module:
 ```
-inspections: 6 files written (api, models, services, permissions, tasks-folded, README) — 3 🟡
-auth:        3 files written (api, services, README)
-billing:     unchanged, skipped
+inspections: api/lifecycle.md, api/counts-filters.md, api/me-specific.md, api/emails.md, api/groups.md, flows/status-machine.md, flows/deficiency-lifecycle.md, flows/massachusetts-email.md, models.md, README.md — 0 🔴, 3 🟡 — 7 save-results
+contracts: api/contract.md, api/proposal.md, api/user-contract.md, api/contract-file.md, flows/proposal-lifecycle.md, flows/renewal-strategy.md, flows/device-assignment.md, models.md, README.md — 0 🔴, 1 🟡 — 11 save-results
+buildings: api/building-crud.md, api/dob-lookup.md, api/files.md, api/notes.md, api/alternate-addresses.md, README.md, models.md — 1 🔴 (api/dob-lookup.md: external API contract not fully traced) — 4 save-results
+billing: unchanged, skipped
 ```
 
 Then proceed to `prompts/05-reference.md`.

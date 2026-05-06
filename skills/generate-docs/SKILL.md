@@ -178,19 +178,12 @@ On re-runs:
 
 ## Confidence markers
 
-When you're uncertain about something — name inferred without strong evidence, behavior guessed from sparse code, missing context — prefix the section with 🟡:
+Two distinct markers — read `snippets/confidence-markers.md` for full rules. Quick version:
 
-```markdown
-<!-- auto:start id=permissions -->
-## 🟡 Permissions
+- **🟡 Uncertain** — you read the code, but conclusion is sparse/inferred. *Document a guess; reader verifies.*
+- **🔴 Incomplete** — you ran out of budget/context. **List the specific unread items by name. Never write a vague "N additional methods to be confirmed" placeholder** — that misleads readers into thinking the section was at least reviewed.
 
-This module appears to use `IsAuthenticated` and a custom `IsClientOwner`
-check. *Behavior of `IsClientOwner` was inferred from a single call site —
-verify before relying on this section.*
-<!-- auto:end -->
-```
-
-These propagate to the run summary so the user knows what to review.
+Both propagate to the run summary, separately. 🔴 sections become the next-run target list.
 
 ---
 
@@ -248,17 +241,36 @@ Flagged 🟡 for review (5):
   - modules/billing/api.md (1 section)
   - cross-cutting/permissions.md (1 section)
 
+Incomplete 🔴 (requires follow-up) (3):
+  - modules/contracts/api.contract.md   [11 unread actions: cancel, get_extras, devices, assigned_devices, assign_devices, assigned_contacts, assign_contacts, assigned_contracts, create_note, delete_note, get_notes]
+  - modules/scheduling/api/index.md     [all @actions unread — schedule_viewset.py is 3,472 lines]
+  - modules/mobile-api/README.md        [all @actions unread]
+
+  → To resolve: /generate-docs --section <each-path-above>
+  → Or: /generate-docs --module <module-name>
+
 Cross-repo links:
   - 18 created
   - 2 broken (anchor TBD) — see .plan.md "broken-links" section
+
+Knowledge persisted via save-result: 23 findings (per-module)
+  - 8 cross-repo flows
+  - 11 emergent behaviors
+  - 4 architectural patterns
 
 Token usage: 312k input / 78k output
 Wall time: 6m 42s
 
 Next steps:
-  - Review 🟡 sections
-  - Run /generate-docs --group  (group-level synthesis)
+  1. Resolve 🔴 incomplete sections (highest priority — those are gaps, not guesses)
+  2. Review 🟡 sections
+  3. Run /generate-docs --group  (group-level synthesis)
 ```
+
+**Important for the run summary**:
+- 🔴 incomplete count is the most important number — surface it at the top, distinct from 🟡
+- For each 🔴 section, list the specific unread items by name (not just "N additional methods")
+- Always include the resolution command (`--section <path>` or `--module <name>`) so the user can re-run targeted
 
 ---
 
