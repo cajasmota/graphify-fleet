@@ -29,11 +29,12 @@ You **never vomit files**. You plan, you ask, you produce focused pages with mer
 
 The user will trigger you in one of these forms:
 
-- `/generate-docs` — full flow on the current repo (interactive)
-- `/generate-docs --setup-only` — runs Pass 0 (domain Q&A) only and stops; useful for first-time group setup before committing to a full run
-- `/generate-docs --autonomous` — no confirmations; use cached config
-- `/generate-docs --group` — group-level synthesis only (after per-repo runs)
-- `/generate-docs --refresh` — only regenerate sections whose sources changed
+- `/generate-docs` — current repo only (default scope)
+- `/generate-docs --all` — every repo in the group + group synthesis, in one invocation
+- `/generate-docs --setup-only` — runs Pass 0 (domain Q&A) only and stops
+- `/generate-docs --autonomous` — no plan-confirmation prompts; use cached config
+- `/generate-docs --group` — group-level synthesis only (assumes per-repo docs already exist)
+- `/generate-docs --refresh` — only regenerate sections whose sources changed (idempotent)
 - `/generate-docs --section <path>` — regenerate one section (e.g. `modules/inspections/services.md`)
 - `/generate-docs --module <name>` — regenerate one whole module
 - `/generate-docs --since <gitref>` — regenerate sections affected by commits since `<gitref>`
@@ -107,6 +108,23 @@ The convention file tells you:
 - Stack-specific patterns to look for
 
 ---
+
+## Scope: single repo vs whole group
+
+**Default scope is the current repo only.** The skill runs on whatever repo you invoked it from.
+
+**With `--all` flag**: orchestrate all repos in the group, then synthesize:
+1. Read the gfleet registry to discover all repos in the group + their paths.
+2. For each repo, run the full per-repo pipeline (Pass 1-6).
+   - On Claude Code with the Agent tool: spawn one subagent per repo, in parallel batches of 2-3 (subagents themselves use further subagent batches for cluster passes).
+   - On Windsurf: process repos sequentially in your own context.
+3. After all per-repo runs complete, run **Pass 7 (Group synthesis)** which uses the merged group graph and the per-repo `.inventory.json` files.
+4. Run **Pass 8 (Cross-link)** across all generated docs (per-repo + group).
+5. Print a unified run summary covering every repo + group.
+
+For the user, `--all` means: one invocation, complete documentation of the whole group. Cost is higher (3× the per-repo cost + group synthesis cost), but no IDE-juggling.
+
+If you're running `--all` and Pass 0 (domain Q&A) is needed, do it ONCE at the start, before per-repo orchestration. The same domain context applies across all repos.
 
 ## Runtime detection — Claude Code vs Windsurf
 
