@@ -81,7 +81,7 @@ Each pass has a dedicated prompt file in `prompts/`. **You must read the relevan
 | 6 | Cross-cutting concerns | After clusters | `prompts/06-cross-cutting.md` |
 | 7 | Group synthesis | Only if `--group` mode AND all repos have run | `prompts/07-group-synthesis.md` |
 | 8 | Cross-link verification | Always last | `prompts/08-cross-link.md` |
-| 9 | Optional: mkdocs config | Only if `--with-mkdocs` flag | `prompts/09-mkdocs-config.md` |
+| 9 | VitePress static-site config | Default-on; opt out with `--no-static-site` | `prompts/09-vitepress.md` |
 
 ---
 

@@ -370,22 +370,34 @@ Step-by-step:
 
 ---
 
-## R3 — Persist discoveries via `graphify save-result` (per-module, NOT batch)
+## R3 — Persist discoveries via `graphify save-result` (per-module, NOT batch — dual-save)
 
 The earlier failure mode: zero `save-result` calls during Pass 4 across 25 modules — everything batched to session end and most was lost.
 
 **The new rule: save-result IMMEDIATELY after completing each module's documentation**, not at session end. If the session is interrupted, the per-module saves already committed survive.
 
-After completing each module, before moving to the next:
+**Dual-save**: every save-result must be written to BOTH locations so it's visible to per-repo MCP queries AND group-level MCP queries. The MCP server reads memory "alongside the graph it's serving" — per-repo queries serve `<repo>/graphify-out/graph.json` (so they see `graphify-out/memory/`), and group-level queries serve `~/.graphify/groups/<group>.json` (so they see `~/.graphify/groups/<group>-memory/`). Save to both.
+
+After completing each module, before moving to the next, for each non-trivial finding:
 
 ```bash
-# For each non-trivial finding discovered during this module's source reads:
+# 1. Per-repo (default location)
 graphify save-result \
   --question "<question phrased as if asked of the graph>" \
   --answer   "<2-5 sentence dense factual summary>" \
   --type     <query|path_query|explain> \
   --nodes    "<node-1>" "<node-2>" ...
+
+# 2. Group-visible (same content, group memory dir)
+graphify save-result \
+  --memory-dir ~/.graphify/groups/<group>-memory/ \
+  --question "<same question>" \
+  --answer   "<same answer>" \
+  --type     <same type> \
+  --nodes    "<same nodes>"
 ```
+
+The `<group>` slug comes from `~/.graphify-fleet/registry.json` lookup of the current repo. The directory is auto-created by gfleet when the skill is installed; if it doesn't exist, the skill creates it on the first save.
 
 What to save (one or more per module):
 - Cross-repo HTTP boundaries (mobile fn → backend handler) → `--type path_query`

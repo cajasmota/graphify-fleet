@@ -299,14 +299,24 @@ Patterns the docs generator noticed that may warrant an explicit decision record
 
 This is the highest-value place to call `save-result` — every user journey you trace is exactly the kind of finding that the static graph cannot encode (HTTP boundaries, emergent multi-repo behaviors).
 
-For each user journey + each cross-repo flow you write:
+For each user journey + each cross-repo flow you write — **dual-save** to both per-repo memory (closest repo, e.g. backend) AND the group memory dir:
 
 ```bash
+# Group memory (mandatory — this is where MCP queries via graphify-<group> read)
 graphify save-result \
+  --memory-dir ~/.graphify/groups/<group>-memory/ \
   --question "<question phrased as if asked of the graph>" \
   --answer   "<3-6 sentence dense summary of the flow, naming the canonical nodes>" \
   --type     path_query \
   --nodes    "<entry-point-node>" "<intermediate-1>" "<intermediate-2>" "<terminal-node>"
+
+# Also save into the primary backend repo's memory/ — useful if anyone ever spins up a per-repo MCP
+graphify save-result \
+  --memory-dir <backend-repo>/graphify-out/memory/ \
+  --question "<same>" \
+  --answer   "<same>" \
+  --type     path_query \
+  --nodes    "<same>"
 ```
 
 Include nodes from EVERY repo the flow crosses — that's how the graph picks up cross-repo edges that AST extraction can't see.
