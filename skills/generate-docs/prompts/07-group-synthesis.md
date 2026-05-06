@@ -295,6 +295,26 @@ Patterns the docs generator noticed that may warrant an explicit decision record
 *The skill never writes ADRs themselves — those are human decisions.*
 ```
 
+## Persist cross-repo flows via `graphify save-result`
+
+This is the highest-value place to call `save-result` — every user journey you trace is exactly the kind of finding that the static graph cannot encode (HTTP boundaries, emergent multi-repo behaviors).
+
+For each user journey + each cross-repo flow you write:
+
+```bash
+graphify save-result \
+  --question "<question phrased as if asked of the graph>" \
+  --answer   "<3-6 sentence dense summary of the flow, naming the canonical nodes>" \
+  --type     path_query \
+  --nodes    "<entry-point-node>" "<intermediate-1>" "<intermediate-2>" "<terminal-node>"
+```
+
+Include nodes from EVERY repo the flow crosses — that's how the graph picks up cross-repo edges that AST extraction can't see.
+
+Aim for ~1 save-result per user journey + ~1 per technical flow. Don't over-save — each one should be a unique cross-repo finding, not duplicated structural facts.
+
+Track count for the run summary.
+
 ## Idempotence + metadata
 
 Same rules. The group-level `.metadata.json` lives at `<group_docs_path>/.metadata.json`.

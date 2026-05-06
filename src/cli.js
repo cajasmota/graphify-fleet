@@ -34,10 +34,12 @@ function help() {
     log.say('  skills status                       show what is installed where');
     log.say('');
     log.say('DOCS');
-    log.say('  docs init     <group>               configure docs for a group (interactive Q&A)');
     log.say('  docs status   [group]               show generated docs + stale sections');
     log.say('  docs run      <group>               instructions for invoking /generate-docs in IDE');
     log.say('  docs path     <group>               print the group docs path');
+    log.say('  docs init-cli <group>               headless CLI Q&A for docs config (no LLM)');
+    log.say('                                       — prefer /generate-docs --setup-only in your IDE');
+    log.say('                                         which seeds answers from the codebase');
     log.say('');
     log.say('INSPECT');
     log.say('  list  (or: ls)                      show all registered groups + node counts');
@@ -147,11 +149,16 @@ export async function main(argv) {
                 const sub = args[0];
                 const target = args[1];
                 switch (sub) {
-                    case 'init':   await docsInit(target); break;
-                    case 'status': await docsStatus(target); break;
-                    case 'run':    docsRun(target); break;
-                    case 'path':   docsPath(target); break;
-                    default: die('usage: gfleet docs {init|status|run|path} [group]');
+                    case 'init':
+                        log.warn('`gfleet docs init` is deprecated — it does plain CLI prompts with no LLM seeding.');
+                        log.info('Prefer: open the repo in Claude Code or Windsurf and run `/generate-docs --setup-only`,');
+                        log.info('which seeds answers from your codebase. Use `gfleet docs init-cli` for the headless CLI version.');
+                        process.exit(1);
+                    case 'init-cli': await docsInit(target); break;
+                    case 'status':   await docsStatus(target); break;
+                    case 'run':      docsRun(target); break;
+                    case 'path':     docsPath(target); break;
+                    default: die('usage: gfleet docs {init-cli|status|run|path} [group]');
                 }
                 break;
             }

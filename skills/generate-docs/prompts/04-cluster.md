@@ -296,6 +296,31 @@ For each external API/service call you find:
 
 If not found in graph: write the bare path/URL as text and add to `.cross-link-todo.md`.
 
+## Persist discoveries via `graphify save-result`
+
+After tracing any of the following during this pass, run `graphify save-result` (Bash tool) so the finding becomes graph-queryable for all future sessions:
+
+- **Cross-repo HTTP boundary** (mobile/frontend → backend): `--type path_query`, include both the caller node label and the handler node label in `--nodes`.
+- **Emergent behavior** (status change driven by multiple files, no single anchor): `--type query`.
+- **Complex query walkthrough** (you explained a multi-join ORM query or raw SQL): `--type query`.
+- **Architectural pattern in this module** (registry, strategy, observer, command bus): `--type explain`.
+
+Format the `--question` as something an engineer might actually ask the graph later (not just a heading). The `--answer` should be a 2-5 sentence dense factual summary — *not* the full doc page; the doc page lives at the file path, the saved result is for queries that may not even know the doc exists.
+
+Example after documenting `InspectionService.create_inspection`:
+
+```bash
+graphify save-result \
+  --question "How is inspector capacity enforced when scheduling an inspection?" \
+  --answer   "InspectionService.create_inspection acquires SELECT FOR UPDATE on the inspector row, calls Inspector.has_capacity(date) which counts existing assignments against Inspector.daily_capacity, then commits. Race-safe across concurrent requests on the same inspector. Concurrent requests on different inspectors do not block each other." \
+  --type     query \
+  --nodes    "InspectionService.create_inspection" "Inspector.has_capacity" "InspectionAssignment"
+```
+
+Skip `save-result` for trivial structural facts (which class is in which file). Use it specifically for findings the static graph cannot encode.
+
+Track count of save-results in this pass; report in run summary.
+
 ## Idempotence
 
 Before writing each file:

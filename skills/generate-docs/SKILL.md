@@ -30,6 +30,7 @@ You **never vomit files**. You plan, you ask, you produce focused pages with mer
 The user will trigger you in one of these forms:
 
 - `/generate-docs` — full flow on the current repo (interactive)
+- `/generate-docs --setup-only` — runs Pass 0 (domain Q&A) only and stops; useful for first-time group setup before committing to a full run
 - `/generate-docs --autonomous` — no confirmations; use cached config
 - `/generate-docs --group` — group-level synthesis only (after per-repo runs)
 - `/generate-docs --refresh` — only regenerate sections whose sources changed
@@ -239,6 +240,38 @@ Next steps:
 
 ---
 
+## Closed-loop via `graphify save-result` (use it!)
+
+When you discover a non-trivial fact during doc generation — especially in Passes 4 and 7 — **persist the finding via `graphify save-result`**. The MCP server reads `graphify-out/memory/` alongside the graph, so saved results surface in all future graph queries (yours and other agents') at zero re-compute cost.
+
+When to call `save-result` during doc generation:
+
+| Situation | `--type` | Where it triggers |
+|-----------|----------|-------------------|
+| Traced a cross-repo HTTP boundary (mobile fn → backend handler) | `path_query` | Pass 4 (mobile/frontend services), Pass 7 (group flows) |
+| Identified an emergent behavior (multi-file causal chain) | `query` | Pass 4 (services), Pass 7 (user journeys) |
+| Documented an architectural pattern (registry, strategy) | `explain` | Pass 4 (services), Pass 6 (cross-cutting) |
+| Worked out a complex query / business rule | `query` | Pass 4 (services, repositories) |
+
+How to call it (Bash tool):
+
+```bash
+graphify save-result \
+  --question "<the question this section answers>" \
+  --answer   "<a 2-5 sentence factual summary, NOT the full doc page>" \
+  --type     <query|path_query|explain> \
+  --nodes    "<node-label-1>" "<node-label-2>" ...
+```
+
+The `--question` should be phrased as a question someone might actually ask the graph later (not a heading). The `--answer` is a *summary*, not the full markdown — keep it dense and factual. `--nodes` lists the canonical node labels you cited.
+
+**Always save** for cross-repo boundaries and emergent behaviors. Skip it for trivial structural facts that the graph already encodes.
+
+After completion, mention the save-result count in the run summary:
+```
+Knowledge persisted via save-result: 12 findings (4 cross-repo, 6 emergent, 2 patterns)
+```
+
 ## Closed-loop: doc nodes in the graph
 
 The next `/graphify .` run after you finish will ingest the `docs/` you just
@@ -259,11 +292,12 @@ This avoids the auto-amplification trap where the skill cites its own past guess
 ## Now: start working
 
 1. Read `prompts/00-domain-context.md` only if `docs-config.json` is missing.
-2. Always read `prompts/01-inventory.md` next.
-3. Always read `prompts/02-plan.md` and produce `docs/.plan.md`.
-4. In interactive mode: STOP and ask the user to review the plan. Wait for confirmation.
-5. In autonomous mode: self-validate the plan (check for obvious problems, modules with 0 nodes, etc.) and continue.
-6. Then proceed pass-by-pass per the table above, reading each pass's prompt file when you enter it.
-7. Print the run summary at the end.
+2. **If `--setup-only` flag is present**: stop here after Pass 0 is complete. Print "Setup complete — run /generate-docs to continue." Exit.
+3. Always read `prompts/01-inventory.md` next.
+4. Always read `prompts/02-plan.md` and produce `docs/.plan.md`.
+5. In interactive mode: STOP and ask the user to review the plan. Wait for confirmation.
+6. In autonomous mode: self-validate the plan (check for obvious problems, modules with 0 nodes, etc.) and continue.
+7. Then proceed pass-by-pass per the table above, reading each pass's prompt file when you enter it.
+8. Print the run summary at the end.
 
 When in doubt, prefer **fewer, better pages over many shallow ones**.
