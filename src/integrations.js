@@ -44,27 +44,58 @@ export function installClaudeSkill(repo) {
 
 const WINDSURF_WORKFLOW_TEMPLATE = join(TEMPLATES_DIR, 'windsurf-workflow.md');
 
-export function writeWindsurfFiles(repo, group, groupGraph) {
+export function writeWindsurfFiles(repo, group, groupGraph, allRepos = []) {
     const wf = join(repo, '.windsurf', 'workflows');
     ensureDir(wf);
     copyFileSync(WINDSURF_WORKFLOW_TEMPLATE, join(wf, 'graphify.md'));
-    const rules = join(repo, '.windsurfrules');
-    const cur = existsSync(rules) ? readFileSync(rules, 'utf8') : '';
-    if (cur.includes('## graphify')) { log.info('windsurf rules already present, leaving as-is'); return; }
-    const block = `
-
-## graphify
-
-This project is part of the **${group}** group, with a merged knowledge graph at ${groupGraph}.
-
-Rules:
-- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- For cross-repo questions, query the graphify MCP server (group: ${group}) which exposes the merged graph
-- After modifying code in this session, run \`graphify update .\` to keep the graph current
-`;
-    writeFileSync(rules, cur + block);
+    upsertAgentRulesBlock(join(repo, '.windsurfrules'), group, groupGraph, allRepos);
     log.info('windsurf workflow + rules written');
+}
+
+const RULES_TEMPLATE = join(TEMPLATES_DIR, 'agent-rules-block.md');
+const RULES_START = '<!-- gfleet:graphify-rules:start -->';
+const RULES_END   = '<!-- gfleet:graphify-rules:end -->';
+
+function buildRulesBlock(group, groupGraph, allRepos, groupDocsPath) {
+    const tpl = readFileSync(RULES_TEMPLATE, 'utf8');
+    const reposList = allRepos.length === 0 ? '' :
+        allRepos.map(r => `- ${r.slug} (${r.stack})  ${r.path}`).join('\n');
+    return tpl
+        .replace(/\{\{group\}\}/g, group)
+        .replace(/\{\{repos_list\}\}/g, reposList || `(other repos in group "${group}")`)
+        .replace(/\{\{group_docs_path\}\}/g, groupDocsPath || `<group-docs-path>`);
+}
+
+// Idempotent: replaces the gfleet-managed block, preserves all other content.
+export function upsertAgentRulesBlock(rulesFile, group, groupGraph, allRepos = [], groupDocsPath = null) {
+    const block = buildRulesBlock(group, groupGraph, allRepos, groupDocsPath);
+    const wrapped = `\n${RULES_START}\n${block}\n${RULES_END}\n`;
+
+    let cur = existsSync(rulesFile) ? readFileSync(rulesFile, 'utf8') : '';
+
+    // 1. If our markers exist: replace between them
+    if (cur.includes(RULES_START) && cur.includes(RULES_END)) {
+        const re = new RegExp(`${RULES_START.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}[\\s\\S]*?${RULES_END.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}`);
+        cur = cur.replace(re, `${RULES_START}\n${block}\n${RULES_END}`);
+    }
+    // 2. If old thin block exists ("## graphify" without our markers): replace it
+    else if (/^## graphify\b/m.test(cur)) {
+        // strip from "## graphify" header to the next H2 (or EOF)
+        cur = cur.replace(/(^|\n)## graphify\b[\s\S]*?(?=\n## |\n*$)/m, `$1${RULES_START}\n${block}\n${RULES_END}\n`);
+    }
+    // 3. Append fresh
+    else {
+        cur = cur + wrapped;
+    }
+
+    writeFileSync(rulesFile, cur);
+}
+
+export function ensureClaudeRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null) {
+    upsertAgentRulesBlock(join(repo, 'CLAUDE.md'), group, groupGraph, allRepos, groupDocsPath);
+}
+export function ensureAgentsRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null) {
+    upsertAgentRulesBlock(join(repo, 'AGENTS.md'), group, groupGraph, allRepos, groupDocsPath);
 }
 
 export function writeRemergeHelper(group, groupGraph, repos) {

@@ -7,6 +7,8 @@ import {
 import { install, uninstall } from './install.js';
 import * as ops from './ops.js';
 import { wizard } from './wizard.js';
+import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
+import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
 
 const VERSION = '0.2.0';
 
@@ -24,6 +26,18 @@ function help() {
     log.say('  doctor                              check prerequisites');
     log.say('  install   <config.json>             install fleet group + register it');
     log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs (purge = also delete graphify-out)');
+    log.say('');
+    log.say('SKILLS (generate-docs)');
+    log.say('  skills install                      install /generate-docs skill (Claude Code + Windsurf)');
+    log.say('  skills uninstall');
+    log.say('  skills update                       re-copy from local graphify-fleet repo');
+    log.say('  skills status                       show what is installed where');
+    log.say('');
+    log.say('DOCS');
+    log.say('  docs init     <group>               configure docs for a group (interactive Q&A)');
+    log.say('  docs status   [group]               show generated docs + stale sections');
+    log.say('  docs run      <group>               instructions for invoking /generate-docs in IDE');
+    log.say('  docs path     <group>               print the group docs path');
     log.say('');
     log.say('INSPECT');
     log.say('  list  (or: ls)                      show all registered groups + node counts');
@@ -117,6 +131,31 @@ export async function main(argv) {
             case 'start':   await applyToOneOrAll(args[0], ops.start);   break;
             case 'stop':    await applyToOneOrAll(args[0], ops.stop);    break;
             case 'restart': await applyToOneOrAll(args[0], ops.restart); break;
+
+            case 'skills': {
+                const sub = args[0];
+                switch (sub) {
+                    case 'install':   skillsInstall(); break;
+                    case 'uninstall': skillsUninstall(); break;
+                    case 'update':    skillsUpdate(); break;
+                    case 'status':    skillsStatus(); break;
+                    default: die('usage: gfleet skills {install|uninstall|update|status}');
+                }
+                break;
+            }
+            case 'docs': {
+                const sub = args[0];
+                const target = args[1];
+                switch (sub) {
+                    case 'init':   await docsInit(target); break;
+                    case 'status': await docsStatus(target); break;
+                    case 'run':    docsRun(target); break;
+                    case 'path':   docsPath(target); break;
+                    default: die('usage: gfleet docs {init|status|run|path} [group]');
+                }
+                break;
+            }
+
             default: log.err(`unknown command: ${cmd}`); help(); process.exit(1);
         }
     } catch (e) {

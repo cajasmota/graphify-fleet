@@ -9,6 +9,7 @@ import {
     installClaudeSkill, writeWindsurfFiles, writeRemergeHelper, installGitHooks,
     addWindsurfGlobalMcp, ensureWindsurfSkill, removeGitHooks, removeMcpEntry,
     removeWindsurfFiles, removeWindsurfGlobalMcp,
+    ensureClaudeRules, ensureAgentsRules,
 } from './integrations.js';
 import { installWatcher, uninstallWatcher } from './watchers.js';
 
@@ -45,8 +46,12 @@ export async function install(configPath) {
         }
 
         writeMcpJson(r.path, cfg.groupGraph);
-        if (cfg.options.claude_code) installClaudeSkill(r.path);
-        if (cfg.options.windsurf)    writeWindsurfFiles(r.path, cfg.group, cfg.groupGraph);
+        if (cfg.options.claude_code) {
+            installClaudeSkill(r.path);
+            ensureClaudeRules(r.path, cfg.group, cfg.groupGraph, cfg.repos);
+            ensureAgentsRules(r.path, cfg.group, cfg.groupGraph, cfg.repos);
+        }
+        if (cfg.options.windsurf)    writeWindsurfFiles(r.path, cfg.group, cfg.groupGraph, cfg.repos);
         installGitHooks(r.path, cfg.group, helper);
         if (cfg.options.watchers)    installWatcher(cfg.group, r.path, r.slug);
 
