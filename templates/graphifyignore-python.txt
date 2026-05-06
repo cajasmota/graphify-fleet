@@ -1,0 +1,42 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+
+# django
+media/
+staticfiles/
+static/
+
+# scratch / runtime
+tmp/
+logs/
+*.log
+
+# generated
+open-api/generated/
+*.openapi.json
+
+# heavy LLM-cost folders (uncomment to re-enable)
+# open-api/
+# pdfs/
+
+# ide / system
+.idea/
+.vscode/
+.DS_Store
+graphify-out/
+
+# build / coverage
+htmlcov/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/

@@ -1,0 +1,16 @@
+# go
+vendor/
+bin/
+*.exe
+*.test
+
+# build / cache
+dist/
+build/
+.cache/
+
+# ide / system
+.idea/
+.vscode/
+.DS_Store
+graphify-out/

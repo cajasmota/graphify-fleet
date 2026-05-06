@@ -1,0 +1,26 @@
+{
+  "group": "upvate",
+  "repos": [
+    {
+      "path": "~/Documents/Projects/UpVate/core-mobile",
+      "slug": "upvate-mobile",
+      "stack": "react-native"
+    },
+    {
+      "path": "~/Documents/Projects/UpVate/upvate_core",
+      "slug": "upvate-core",
+      "stack": "python"
+    },
+    {
+      "path": "~/Documents/Projects/UpVate/upvate_core_frontend",
+      "slug": "upvate-frontend",
+      "stack": "node"
+    }
+  ],
+  "options": {
+    "wiki_gitignored": true,
+    "watchers": true,
+    "windsurf": true,
+    "claude_code": true
+  }
+}

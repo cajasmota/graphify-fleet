@@ -1,0 +1,39 @@
+# dependencies
+node_modules/
+ios/Pods/
+android/build/
+android/.gradle/
+android/app/build/
+.expo/
+.expo-shared/
+
+# build artifacts
+APK/
+*.ipa
+*.apk
+*.aab
+build/
+dist/
+
+# generated / lockfiles
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.lock
+
+# native xcode/gradle generated
+ios/build/
+ios/DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# assets that would trigger LLM extraction
+assets/**/*.png
+assets/**/*.jpg
+assets/**/*.webp
+
+# scratch
+.idea/
+.vscode/
+.DS_Store
+graphify-out/

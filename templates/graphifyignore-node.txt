@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+
+# build artifacts
+dist/
+build/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+
+# lockfiles
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# heavy LLM-cost folders — pdfs would be sent to your model API
+pdfs/
+
+# public assets that would trigger image LLM extraction
+public/**/*.png
+public/**/*.jpg
+public/**/*.webp
+public/**/*.gif
+
+# ide / system
+.idea/
+.vscode/
+.DS_Store
+graphify-out/
+
+# coverage / cache
+coverage/
+.nyc_output/
+.eslintcache

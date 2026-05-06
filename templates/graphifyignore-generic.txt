@@ -1,0 +1,22 @@
+# common build / vendor
+node_modules/
+.venv/
+venv/
+vendor/
+target/
+dist/
+build/
+
+# ide / system
+.idea/
+.vscode/
+.DS_Store
+graphify-out/
+
+# media (would trigger LLM)
+*.png
+*.jpg
+*.webp
+*.gif
+*.mp4
+*.mov
