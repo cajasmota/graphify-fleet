@@ -39,6 +39,23 @@ In Claude Code (per-project `.mcp.json`), there's also a `graphify-{{repo_slug}}
 - Wiki-style browsing → `graphify-out/wiki/index.md` if it exists
 - After modifying code → run `graphify update .` (the watcher does this on save)
 
+### Graph freshness (check before architecture queries)
+
+Before answering codebase/architecture questions, sanity-check that the graph reflects current code. The graph records which commit it was built from:
+
+1. The build commit is shown in `graphify-out/GRAPH_REPORT.md` as `Built from commit: <sha>`.
+2. Compare to `git rev-parse --short HEAD` (current HEAD).
+3. If they differ:
+   - Watcher should already be rebuilding (check `~/.cache/graphify-fleet/{{group}}/{{repo_slug}}.log`).
+   - If you can't wait, run `graphify update .` synchronously.
+   - When answering anyway against a stale graph, **call out the staleness** to the user (e.g. "graph is at SHA abc123 but HEAD is def456 — answer reflects pre-change state").
+
+The post-commit hook auto-rebuilds on commits, so the graph is usually current. Stale graph means: uncommitted changes since the last commit, or the watcher crashed.
+
+### Multi-dev / merge-conflict safety
+
+`graph.json` files are union-merged automatically when two teammates commit graph rebuilds in parallel. The merge driver is installed per-clone — gfleet sets it up; new teammates run `gfleet onboard` after cloning to register the driver in their local `.git/config`. Without it, parallel commits can produce conflict markers in `graph.json`.
+
 ### Generated documentation
 
 - This repo:  `docs/`              (technical, code-anchored)

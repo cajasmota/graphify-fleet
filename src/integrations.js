@@ -166,6 +166,55 @@ fi
 
 const HOOK_NAMES = ['post-commit', 'post-checkout'];
 
+// Merge driver registers `graphify merge-driver` for graph.json files,
+// preventing conflicts when two devs commit graph rebuilds in parallel.
+// graphify announced this in v0.7.0 but the auto-install was missing in 0.7.9
+// — gfleet sets it up explicitly. Two parts:
+//   (a) git config in .git/config (per-clone, NOT committed) — registers the driver
+//   (b) .gitattributes (committed) — tells git to use the driver for graph.json
+const MERGE_DRIVER_NAME = 'graphify graph.json union merger';
+const MERGE_DRIVER_CMD  = 'graphify merge-driver %O %A %B';
+const GITATTRIBUTES_LINE = '**/graphify-out/graph.json merge=graphify';
+
+export function installMergeDriver(gitRoot) {
+    // (a) Register driver in local .git/config (per-clone)
+    const r1 = run('git', ['-C', gitRoot, 'config', 'merge.graphify.name', MERGE_DRIVER_NAME]);
+    const r2 = run('git', ['-C', gitRoot, 'config', 'merge.graphify.driver', MERGE_DRIVER_CMD]);
+    if (r1.code !== 0 || r2.code !== 0) { log.warn('failed to register merge driver in .git/config'); return false; }
+
+    // (b) Ensure .gitattributes has the entry (committed)
+    const f = join(gitRoot, '.gitattributes');
+    const cur = existsSync(f) ? readFileSync(f, 'utf8') : '';
+    if (!cur.includes('merge=graphify')) {
+        const sep = cur.endsWith('\n') || cur === '' ? '' : '\n';
+        const block = `${sep}# graphify-fleet — union-merge graph.json instead of conflict markers\n${GITATTRIBUTES_LINE}\n`;
+        writeFileSync(f, cur + block);
+        log.info(`merge driver registered + .gitattributes updated (commit it: git add .gitattributes && git commit)`);
+    } else {
+        log.info(`merge driver registered (.gitattributes already has the entry)`);
+    }
+    return true;
+}
+
+export function removeMergeDriver(gitRoot) {
+    run('git', ['-C', gitRoot, 'config', '--unset', 'merge.graphify.name']);
+    run('git', ['-C', gitRoot, 'config', '--unset', 'merge.graphify.driver']);
+    // .gitattributes: only remove the gfleet-added block (preserve any user lines)
+    const f = join(gitRoot, '.gitattributes');
+    if (!existsSync(f)) return;
+    let cur = readFileSync(f, 'utf8');
+    cur = cur.replace(/\n*# graphify-fleet[\s\S]*?\*\*\/graphify-out\/graph\.json merge=graphify\n/g, '\n');
+    writeFileSync(f, cur);
+}
+
+export function checkMergeDriverStatus(gitRoot) {
+    const r = run('git', ['-C', gitRoot, 'config', '--get', 'merge.graphify.driver']);
+    const registered = r.code === 0 && r.stdout.trim() === MERGE_DRIVER_CMD;
+    const f = join(gitRoot, '.gitattributes');
+    const attribOk = existsSync(f) && readFileSync(f, 'utf8').includes('merge=graphify');
+    return { registered, attribOk };
+}
+
 export function installGitHooks(repo, group, helperPath) {
     const r = run('graphify', ['hook', 'install'], { cwd: repo });
     if (r.code !== 0) log.warn('graphify hook install failed (continuing)');

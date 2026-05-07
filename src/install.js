@@ -10,6 +10,7 @@ import {
     addWindsurfGlobalMcp, ensureWindsurfSkill, removeGitHooks, removeMcpEntry,
     removeWindsurfFiles, removeWindsurfGlobalMcp,
     ensureClaudeRules, ensureAgentsRules,
+    installMergeDriver, removeMergeDriver,
 } from './integrations.js';
 import { installWatcher, uninstallWatcher } from './watchers.js';
 
@@ -67,9 +68,10 @@ export async function install(configPath) {
         // Hooks: install once per .git root. Monorepo modules sharing .git get one hook.
         if (!hookedGitRoots.has(gitRoot)) {
             installGitHooks(gitRoot, cfg.group, helper);
+            installMergeDriver(gitRoot);
             hookedGitRoots.add(gitRoot);
         } else {
-            log.info(`git hooks already installed at ${gitRoot} (shared across monorepo modules)`);
+            log.info(`git hooks + merge driver already installed at ${gitRoot} (shared across monorepo modules)`);
         }
 
         if (cfg.options.watchers)    installWatcher(cfg.group, r.path, r.slug);
@@ -107,6 +109,7 @@ export function uninstall(configPath, opts = {}) {
         const gitRoot = r.monorepoRoot ?? r.path;
         if (existsSync(join(gitRoot, '.git')) && !unhookedGitRoots.has(gitRoot)) {
             removeGitHooks(gitRoot, cfg.group);
+            removeMergeDriver(gitRoot);
             unhookedGitRoots.add(gitRoot);
         }
         removeMcpEntry(r.path);
