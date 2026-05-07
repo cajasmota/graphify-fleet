@@ -177,17 +177,38 @@ export function graphifyPython() {
     return which('python3') || which('python');
 }
 
+// Pinned graphify version. Bump this only after re-validating the
+// src/patches/graphify-repo-filter.js anchors against the new release.
+// gfleet patch graphify will print a warning if installed != pinned.
+export const GRAPHIFY_PIN = '0.7.9';
+
 export function ensureGraphify(verbose = true) {
     if (!which('uv')) die('uv is required. install: curl -LsSf https://astral.sh/uv/install.sh | sh');
+    const spec = `graphifyy==${GRAPHIFY_PIN}`;
     if (!graphifyBin()) {
-        if (verbose) log.info('installing graphifyy via uv (with mcp + watchdog extras)...');
-        runOrThrow('uv', ['tool', 'install', 'graphifyy', '--with', 'mcp', '--with', 'watchdog']);
+        if (verbose) log.info(`installing ${spec} via uv (with mcp + watchdog extras)...`);
+        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog']);
         return;
     }
     const py = graphifyPython();
+    // Check version matches pin
+    const versionResult = run(py, ['-c', `from importlib.metadata import version; print(version('graphifyy'))`]);
+    const installed = versionResult.code === 0 ? versionResult.stdout.trim() : null;
+    if (installed && installed !== GRAPHIFY_PIN) {
+        if (verbose) log.warn(`graphifyy ${installed} is installed; gfleet pins to ${GRAPHIFY_PIN}. Pinning now (will re-apply patch after).`);
+        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        return;
+    }
     const ok = runOk(py, ['-c', 'import mcp, watchdog']);
     if (!ok) {
         if (verbose) log.info('adding mcp + watchdog extras to graphifyy...');
-        runOrThrow('uv', ['tool', 'install', 'graphifyy', '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
     }
+}
+
+export function getGraphifyVersion() {
+    const py = graphifyPython();
+    if (!py) return null;
+    const r = run(py, ['-c', `from importlib.metadata import version; print(version('graphifyy'))`]);
+    return r.code === 0 ? r.stdout.trim() : null;
 }

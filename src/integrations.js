@@ -79,10 +79,13 @@ function buildRulesBlock(group, groupGraph, allRepos, groupDocsPath, repoSlug) {
     const tpl = readFileSync(RULES_TEMPLATE, 'utf8');
     const reposList = allRepos.length === 0 ? '' :
         allRepos.map(r => `- ${r.slug} (${r.stack})  ${r.path}`).join('\n');
+    const reposTable = allRepos.length === 0 ? '| (no repos in registry) | | |' :
+        allRepos.map(r => `| ${r.slug === repoSlug ? '**' + r.slug + ' (this)**' : r.slug} | \`${r.slug}\` | ${r.path} |`).join('\n');
     return tpl
         .replace(/\{\{group\}\}/g, group)
         .replace(/\{\{repo_slug\}\}/g, repoSlug || '<this-repo>')
         .replace(/\{\{repos_list\}\}/g, reposList || `(other repos in group "${group}")`)
+        .replace(/\{\{repos_table\}\}/g, reposTable)
         .replace(/\{\{group_docs_path\}\}/g, groupDocsPath || `<group-docs-path>`);
 }
 

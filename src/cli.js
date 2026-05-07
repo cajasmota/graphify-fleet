@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util';
 import { existsSync } from 'node:fs';
 import {
     log, die, which, graphifyBin, graphifyPython, run,
-    listRegistered, resolveConfigArg, REGISTRY,
+    listRegistered, resolveConfigArg, REGISTRY, GRAPHIFY_PIN, getGraphifyVersion,
 } from './util.js';
 import { install, uninstall } from './install.js';
 import * as ops from './ops.js';
@@ -88,6 +88,10 @@ function doctor() {
     }
     if (graphifyBin()) {
         log.ok(`graphify found (${graphifyBin()})`);
+        const v = getGraphifyVersion();
+        if (v === GRAPHIFY_PIN)        log.ok(`graphify version: ${v} (matches gfleet pin)`);
+        else if (v)                    log.warn(`graphify version: ${v}  — gfleet pins to ${GRAPHIFY_PIN}. Run gfleet install to repin (will re-apply patch).`);
+        else                           log.warn('graphify version unknown');
         const py = graphifyPython();
         const r = run(py, ['-c', 'import mcp, watchdog']);
         if (r.code === 0) log.ok('graphify extras: mcp + watchdog');
