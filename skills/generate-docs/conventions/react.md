@@ -37,7 +37,7 @@ If `src/` has only `components/`, `hooks/`, etc. (no domain folders), the projec
   - **Data display** (List, Table, Card, Detail)
   - **Forms** (Input, Select, FormSection)
   - **Feedback** (Alert, Toast, Spinner)
-  - **Domain-specific** (InspectionStatusBadge, ClientCard)
+  - **Domain-specific** (InspectionStatusBadge, CustomerCard)
 - Document **public** components (used outside this module). Internal-only: skip.
 - For each documented: props, when to use, code ref.
 - If the module has a UI library it consumes (gluestack, MUI, shadcn), note which primitives wrap which.
@@ -63,7 +63,7 @@ If `src/` has only `components/`, `hooks/`, etc. (no domain folders), the projec
 - Note auth handling (token attachment, refresh).
 
 ### `types.md`
-- Only document **domain types** (Inspection, Client, etc.) — skip utility types.
+- Only document **domain types** (Order, Customer, etc.) — skip utility types.
 - Show the type definition.
 - Cross-reference to backend models / mobile types (consistency check).
 - 🟡 if frontend type shape diverges from backend: flag it.

@@ -48,8 +48,8 @@ Permission class checking that `request.user` owns the `client_id` on the URL or
 [`core/permissions/base.py:42`](../../core/permissions/base.py#L42)
 
 Used in:
-- `inspections.api.InspectionViewSet`
-- `contracts.api.ContractViewSet`
+- `orders.api.OrderViewSet`
+- `orders.api.ContractViewSet`
 - `billing.api.InvoiceViewSet`
 
 ```python
@@ -70,7 +70,7 @@ Modules that use this concern:
 
 | Module | Files | Notes |
 |--------|-------|-------|
-| [inspections](../modules/inspections/) | api.py, views.py | uses `IsClientOwner` + custom `IsAssignedInspector` |
+| [orders](../modules/orders/) | api.py, views.py | uses `IsClientOwner` + custom `IsAssignedInspector` |
 | [billing](../modules/billing/) | api.py | uses `IsClientOwner` only |
 | ...
 <!-- auto:end -->
@@ -86,11 +86,11 @@ Things easy to get wrong:
 
 ## In-module stubs
 
-For each module that uses this concern, the module-level artifact file (e.g., `modules/inspections/permissions.md`) should contain ONLY a stub:
+For each module that uses this concern, the module-level artifact file (e.g., `modules/orders/permissions.md`) should contain ONLY a stub:
 
 ```markdown
 <!-- docs:auto -->
-# Inspections — Permissions
+# Orders — Permissions
 
 <!-- auto:start id=stub -->
 This module uses the `IsClientOwner` permission class plus a module-specific
@@ -102,10 +102,10 @@ For the full pattern documentation see [cross-cutting/permissions.md](../../cros
 
 ### `IsAssignedInspector`
 
-[`core/inspections/permissions.py:12`](../../../core/inspections/permissions.py#L12)
+[`core/orders/permissions.py:12`](../../../core/orders/permissions.py#L12)
 
-Checks that `request.user.id == inspection.assigned_inspector_id`. Used on
-`PATCH /api/v1/inspections/{id}/` to limit edits to the assigned inspector.
+Checks that `request.user.id == order.assigned_inspector_id`. Used on
+`PATCH /api/v1/orders/{id}/` to limit edits to the assigned owner.
 
 (No other module-specific permissions.)
 <!-- auto:end -->

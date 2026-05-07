@@ -1,0 +1,30 @@
+{
+  "group": "myapp",
+  "repos": [
+    {
+      "path": "~/Code/myapp/api",
+      "slug": "myapp-backend",
+      "stack": "python"
+    },
+    {
+      "path": "~/Code/myapp/web",
+      "slug": "myapp-frontend",
+      "stack": "node"
+    },
+    {
+      "path": "~/Code/myapp/mobile",
+      "slug": "myapp-mobile",
+      "stack": "react-native"
+    }
+  ],
+  "options": {
+    "wiki_gitignored": true,
+    "watchers": true,
+    "windsurf": true,
+    "claude_code": true
+  },
+  "docs": {
+    "enabled": true,
+    "group_docs_path": "~/Code/myapp/docs"
+  }
+}

@@ -35,7 +35,7 @@ The user will trigger you in one of these forms:
 - `/generate-docs --autonomous` — no plan-confirmation prompts; use cached config
 - `/generate-docs --group` — group-level synthesis only (assumes per-repo docs already exist)
 - `/generate-docs --refresh` — only regenerate sections whose sources changed (idempotent)
-- `/generate-docs --section <path>` — regenerate one section (e.g. `modules/inspections/services.md`)
+- `/generate-docs --section <path>` — regenerate one section (e.g. `modules/orders/services.md`)
 - `/generate-docs --module <name>` — regenerate one whole module
 - `/generate-docs --since <gitref>` — regenerate sections affected by commits since `<gitref>`
 
@@ -152,10 +152,10 @@ Every markdown file you generate uses these markers. Read `snippets/auto-marker-
 
 ```markdown
 <!-- docs:auto -->
-# Inspections module
+# Orders module
 
 <!-- auto:start id=overview -->
-This module handles the inspection lifecycle from creation through publication.
+This module handles the order lifecycle from creation through publication.
 <!-- auto:end -->
 
 <!-- human:start -->
@@ -192,8 +192,8 @@ Both propagate to the run summary, separately. 🔴 sections become the next-run
 When you find a call to another repo (mobile → backend, frontend → backend), write a link in this format:
 
 ```markdown
-Calls `POST /api/v1/inspections/` (backend handler:
-[`upvate_core/inspections.api.create_inspection`](../../../upvate_core/docs/modules/inspections/api.md#post-apiv1inspections)).
+Calls `POST /api/v1/orders/` (backend handler:
+[`myapp-backend/orders.api.create_order`](../../../myapp-backend/docs/modules/orders/api.md#post-apiv1inspections)).
 ```
 
 Pass 8 (cross-link verification) will confirm the anchor exists. If not, it falls back to a non-anchored link with `(anchor TBD)` and adds the broken link to the run summary.
@@ -225,10 +225,10 @@ On every run, read `docs/.stale.md` first. If `--refresh` mode, regenerate only 
 When you complete a run, print a structured summary:
 
 ```
-✓ generate-docs complete — repo: upvate-core, group: upvate
+✓ generate-docs complete — repo: myapp-backend, group: myapp
 
 Generated/updated:
-  - 8 modules (~/Documents/Projects/UpVate/upvate_core/docs/modules/)
+  - 8 modules (~/Documents/Projects/MyApp/myapp-backend/docs/modules/)
   - 3 cross-cutting docs
   - 4 reference pages
   - 11 mermaid diagrams
@@ -237,13 +237,13 @@ Skipped (unchanged):
   - 12 modules
 
 Flagged 🟡 for review (5):
-  - modules/inspections/services.md (3 sections)
+  - modules/orders/services.md (3 sections)
   - modules/billing/api.md (1 section)
   - cross-cutting/permissions.md (1 section)
 
 Incomplete 🔴 (requires follow-up) (3):
-  - modules/contracts/api.contract.md   [11 unread actions: cancel, get_extras, devices, assigned_devices, assign_devices, assigned_contacts, assign_contacts, assigned_contracts, create_note, delete_note, get_notes]
-  - modules/scheduling/api/index.md     [all @actions unread — schedule_viewset.py is 3,472 lines]
+  - modules/orders/api.order.md   [11 unread actions: cancel, get_extras, devices, assigned_devices, assign_devices, assigned_contacts, assign_contacts, assigned_contracts, create_note, delete_note, get_notes]
+  - modules/scheduling/api/index.md     [all @actions unread — scheduler_viewset.py is 3,472 lines]
   - modules/mobile-api/README.md        [all @actions unread]
 
   → To resolve: /generate-docs --section <each-path-above>

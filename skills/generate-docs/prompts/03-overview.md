@@ -56,15 +56,15 @@ Use the domain context (product summary, primary users) to frame it.
 
 ```mermaid
 graph LR
-  inspections[inspections] --> auth
-  inspections --> users
-  billing --> inspections
+  orders[orders] --> auth
+  orders --> users
+  billing --> orders
   ...
 ```
 
 | Module | What it owns | LOC |
 |--------|--------------|-----|
-| [inspections](modules/inspections/) | Inspection lifecycle, scheduling, results | 4231 |
+| [orders](modules/orders/) | Order lifecycle, scheduling, results | 4231 |
 | [auth](modules/auth/) | Token-based auth, password reset | 1844 |
 | ... |
 <!-- auto:end -->
@@ -120,11 +120,11 @@ vocabulary plus 5-10 more terms inferred from the most-connected
 nodes. 1-2 sentences per concept.
 
 Example:
-- **Inspection** — a scheduled visit by an inspector to a client property,
+- **Order** — a scheduled visit by an owner to a customer property,
   resulting in a Result and possibly a Report.
-- **Inspector** — field worker who performs inspections; has assignments
+- **Owner** — field worker who performs orders; has assignments
   and capacity limits.
-- **Client** — paying customer; owns properties, contracts, and inspections.
+- **Customer** — paying customer; owns properties, orders, and orders.
 <!-- auto:end -->
 
 <!-- auto:start id=entry-points -->

@@ -36,7 +36,7 @@ Writes to: `<group_docs_path>` (from `docs-config.json`).
 │       ├── <flow-name>.md             # one per major cross-repo flow
 │       └── ...
 ├── reference/
-│   ├── api-contracts.md               # endpoints + which clients call each
+│   ├── api-orders.md               # endpoints + which clients call each
 │   ├── shared-libs.md                 # internal packages used across repos
 │   └── third-party-integrations.md
 ├── services/                          # only if any repo is microservices style
@@ -59,7 +59,7 @@ Write each as a sequence diagram in mermaid plus prose.
 
 ```markdown
 <!-- docs:auto -->
-# Inspection lifecycle
+# Order lifecycle
 
 <!-- auto:start id=summary -->
 *From scheduling on the web dashboard to viewing the result on mobile.
@@ -69,9 +69,9 @@ This is the core user journey.*
 <!-- auto:start id=actors -->
 ## Actors
 
-- **Client admin** (web) — schedules inspections
-- **Inspector** (mobile) — performs inspections, uploads results
-- **Client viewer** (web) — reviews completed inspections
+- **Customer admin** (web) — schedules orders
+- **Owner** (mobile) — performs orders, uploads results
+- **Customer viewer** (web) — reviews completed orders
 <!-- auto:end -->
 
 <!-- auto:start id=flow -->
@@ -85,19 +85,19 @@ sequenceDiagram
     participant Q as Celery
     participant N as Notifications service
     participant M as Mobile (InspectorTodayList)
-    W->>API: POST /api/v1/inspections/
+    W->>API: POST /api/v1/orders/
     API->>DB: validate + persist
     API->>Q: send_invite task
-    Q->>N: email + push to inspector
+    Q->>N: email + push to owner
     N->>M: push notification
-    M->>API: GET /api/v1/inspections/?inspector=me
-    M->>API: PATCH /api/v1/inspections/{id} {status:'in_progress'}
-    M->>API: POST /api/v1/inspections/{id}/photos/
-    M->>API: PATCH /api/v1/inspections/{id} {status:'complete', result:{...}}
+    M->>API: GET /api/v1/orders/?owner=me
+    M->>API: PATCH /api/v1/orders/{id} {status:'in_progress'}
+    M->>API: POST /api/v1/orders/{id}/photos/
+    M->>API: PATCH /api/v1/orders/{id} {status:'complete', result:{...}}
     API->>DB: persist + signal
     API->>Q: generate_report task
     Q->>API: result_ready signal
-    API->>N: email client viewer
+    API->>N: email customer viewer
     N->>W: appears in dashboard list
 ```
 <!-- auto:end -->
@@ -105,33 +105,33 @@ sequenceDiagram
 <!-- auto:start id=touchpoints -->
 ## Touchpoints (per repo)
 
-### Frontend (upvate-frontend)
-- Page: [`CreateInspectionForm`](../../upvate_core_frontend/docs/modules/inspections/pages.md#createinspectionform)
-- Service: [`createInspection`](../../upvate_core_frontend/docs/modules/inspections/services.md#createinspection)
+### Frontend (myapp-frontend)
+- Page: [`CreateInspectionForm`](../../myapp-frontend/docs/modules/orders/pages.md#createinspectionform)
+- Service: [`createInspection`](../../myapp-frontend/docs/modules/orders/services.md#createinspection)
 
-### Backend (upvate-core)
-- Endpoint: [`POST /api/v1/inspections/`](../../upvate_core/docs/modules/inspections/api.md#post-apiv1inspections)
-- Service: [`InspectionService.create_inspection`](../../upvate_core/docs/modules/inspections/services.md#create_inspection)
+### Backend (myapp-backend)
+- Endpoint: [`POST /api/v1/orders/`](../../myapp-backend/docs/modules/orders/api.md#post-apiv1inspections)
+- Service: [`OrderService.create_order`](../../myapp-backend/docs/modules/orders/services.md#create_order)
 
-### Mobile (upvate-mobile)
-- Screen: [`InspectorTodayList`](../../core-mobile/docs/modules/inspections/screens.md#inspectortodaylist)
-- Service: [`fetchAssignedInspections`](../../core-mobile/docs/modules/inspections/services.md#fetchassignedinspections)
+### Mobile (myapp-mobile)
+- Screen: [`InspectorTodayList`](../../myapp-mobile/docs/modules/orders/screens.md#inspectortodaylist)
+- Service: [`fetchAssignedInspections`](../../myapp-mobile/docs/modules/orders/services.md#fetchassignedinspections)
 <!-- auto:end -->
 
 <!-- auto:start id=domain-rules -->
 ## Domain rules surfaced by this flow
 
-- An inspection cannot be created outside the client's contract window.
-- An inspector cannot exceed `daily_capacity` (default: 4) per day.
+- An order cannot be created outside the customer's order window.
+- An owner cannot exceed `daily_capacity` (default: 4) per day.
 - Photos must be uploaded before status can move to `complete`.
-- A `complete` inspection auto-generates a Result, which triggers the report task.
+- A `complete` order auto-generates a Result, which triggers the report task.
 <!-- auto:end -->
 
 <!-- auto:start id=failure-modes -->
 ## Failure modes & recoveries
 
 - **Network failure mid-upload (mobile)**: photos retry with exponential backoff; status stays `in_progress` until success.
-- **Inspector capacity race**: `select_for_update` on the inspector row prevents double-booking; retry once on conflict.
+- **Owner capacity race**: `select_for_update` on the owner row prevents double-booking; retry once on conflict.
 - 🟡 *what happens if `generate_report` task fails?* — investigate retry policy.
 <!-- auto:end -->
 ```
@@ -152,11 +152,11 @@ sequenceDiagram
 ```mermaid
 graph TB
     subgraph "User-facing"
-        W[Web app<br/>upvate-frontend<br/>Vite + React]
-        M[Mobile app<br/>upvate-mobile<br/>Expo + React Native]
+        W[Web app<br/>myapp-frontend<br/>Vite + React]
+        M[Mobile app<br/>myapp-mobile<br/>Expo + React Native]
     end
     subgraph "Backend"
-        API[API<br/>upvate-core<br/>Django + DRF]
+        API[API<br/>myapp-backend<br/>Django + DRF]
         WORKER[Celery workers]
     end
     subgraph "Data"
@@ -174,9 +174,9 @@ graph TB
 ```
 
 Each component:
-- **upvate-frontend** — web app for client admins. Talks to backend over HTTPS. State: zustand.
-- **upvate-mobile** — Expo app for inspectors. Same backend. Offline-first via TanStack Query persistence.
-- **upvate-core** — Django REST Framework + Postgres. Background work via Celery.
+- **myapp-frontend** — web app for customer admins. Talks to backend over HTTPS. State: zustand.
+- **myapp-mobile** — Expo app for inspectors. Same backend. Offline-first via TanStack Query persistence.
+- **myapp-backend** — Django REST Framework + Postgres. Background work via Celery.
 <!-- auto:end -->
 
 <!-- auto:start id=tech-choices -->
@@ -204,20 +204,20 @@ Combine domain vocabulary from `docs-config.json` with terms inferred from cross
 - Where it lives (which models/types/screens use it)
 - Aliases / synonyms (so people don't reuse different words for the same thing)
 
-## `api-contracts.md`
+## `api-orders.md`
 
 Single page listing every backend endpoint + which clients call it.
 
 ```markdown
 <!-- docs:auto -->
-# API contracts
+# API orders
 
-All endpoints exposed by `upvate-core`. Auth: Token unless noted.
+All endpoints exposed by `myapp-backend`. Auth: Token unless noted.
 
 | Method | Path | Handler | Frontend caller | Mobile caller | Notes |
 |--------|------|---------|-----------------|---------------|-------|
-| POST | /api/v1/auth/login/ | [`LoginView`](../../upvate_core/docs/modules/auth/api.md#login) | [`useLogin`](../../upvate_core_frontend/docs/modules/auth/hooks.md#uselogin) | [`login`](../../core-mobile/docs/modules/auth/services.md#login) | unauth |
-| GET | /api/v1/inspections/ | ... | ... | ... | |
+| POST | /api/v1/auth/login/ | [`LoginView`](../../myapp-backend/docs/modules/auth/api.md#login) | [`useLogin`](../../myapp-frontend/docs/modules/auth/hooks.md#uselogin) | [`login`](../../myapp-mobile/docs/modules/auth/services.md#login) | unauth |
+| GET | /api/v1/orders/ | ... | ... | ... | |
 | ...
 ```
 

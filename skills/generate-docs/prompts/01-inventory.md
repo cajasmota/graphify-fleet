@@ -36,7 +36,7 @@ If filesystem signals are weak, fall back to graphify communities — read `<rep
 
 Without reading source files (use the graph + filesystem only):
 
-- `name` — kebab-case slug (e.g. `inspections`, `billing`)
+- `name` — kebab-case slug (e.g. `orders`, `billing`)
 - `path` — directory under repo root
 - `node_count` — from graphify community
 - `god_nodes` — top 5-10 nodes by degree, with file paths
@@ -89,16 +89,16 @@ Write `<repo>/docs/.inventory.json`:
 ```json
 {
   "version": 1,
-  "repo": "upvate-core",
+  "repo": "myapp-backend",
   "stack": "django",
   "generated_at": "<ISO-8601>",
   "modules": [
     {
-      "name": "inspections",
-      "path": "core/inspections",
+      "name": "orders",
+      "path": "core/orders",
       "node_count": 87,
       "god_nodes": [
-        {"label": "InspectionViewSet", "file": "core/inspections/api.py", "degree": 23},
+        {"label": "OrderViewSet", "file": "core/orders/api.py", "degree": 23},
         ...
       ],
       "community_id": 5,
@@ -113,7 +113,7 @@ Write `<repo>/docs/.inventory.json`:
     {
       "name": "permissions",
       "files": ["core/permissions/*"],
-      "used_in_modules": ["inspections", "users", "billing", "contracts"]
+      "used_in_modules": ["orders", "users", "billing", "orders"]
     },
     ...
   ],
@@ -128,7 +128,7 @@ Write `<repo>/docs/.inventory.json`:
 ### 7. Print a compact summary
 
 ```
-Inventory complete: upvate-core
+Inventory complete: myapp-backend
   - 8 modules (87 god nodes total)
   - 3 cross-cutting concerns
   - 4 repo-wide reference targets

@@ -68,21 +68,21 @@ When a source file has more than one of these units, OR a single unit has more t
 - The shared `api.md` becomes a **thin index page** listing units and linking
 - `api.<unit-name>.md` covers one unit completely
 
-Example: `contract_viewset.py` contains `ContractViewSet`, `ProposalViewSet`, `UserContractViewSet`, `ContractFileViewSet` (4 classes). The plan must produce:
+Example: `order_viewset.py` contains `ContractViewSet`, `InvoiceViewSet`, `UserOrderViewSet`, `OrderFileViewSet` (4 classes). The plan must produce:
 
 ```
-docs/modules/contracts/
+docs/modules/orders/
   README.md
   models.md
   api/
     index.md                ← lists all 4 ViewSets
-    contract.md             ← ContractViewSet: all 15 actions
-    proposal.md             ← ProposalViewSet: list, get_counts, renew strategy, create
-    user-contract.md        ← UserContractViewSet
-    contract-file.md        ← ContractFileViewSet
+    order.md             ← ContractViewSet: all 15 actions
+    invoice.md             ← InvoiceViewSet: list, get_counts, renew strategy, create
+    user-order.md        ← UserOrderViewSet
+    order-file.md        ← OrderFileViewSet
   flows/
     index.md
-    proposal-lifecycle.md
+    invoice-lifecycle.md
     renewal-strategy.md
     device-assignment.md
 ```
@@ -90,7 +90,7 @@ docs/modules/contracts/
 NOT:
 
 ```
-docs/modules/contracts/
+docs/modules/orders/
   api.md                    ← single file covering 4 ViewSets, 30+ actions
                               → forces shallow placeholder docs (the failure mode)
 ```
@@ -172,42 +172,42 @@ Status: PROPOSED   ← change to APPROVED when user confirms (interactive)
 
 ## Modules
 
-### inspections — SUBFOLDER (1850 LOC, 1 ViewSet, 30+ actions, 3 distinct flows)
+### orders — SUBFOLDER (1850 LOC, 1 ViewSet, 30+ actions, 3 distinct flows)
 
 Folder shape:
-- modules/inspections/README.md
-- modules/inspections/api/index.md
-- modules/inspections/api/inspection-viewset.md      (the only ViewSet — 30 @actions)
+- modules/orders/README.md
+- modules/orders/api/index.md
+- modules/orders/api/order-viewset.md      (the only ViewSet — 30 @actions)
                                                      Subdivide further: 30 actions in one file is too long.
                                                      Split by domain group:
-- modules/inspections/api/lifecycle.md               (create, update_inspections, update_deficiencies)
-- modules/inspections/api/counts-filters.md          (get_inspection_counts, get_inspection_devices)
-- modules/inspections/api/me-specific.md             (ME report group operations)
-- modules/inspections/api/emails.md                  (results email, reminder)
-- modules/inspections/api/groups.md                  (inspection group read/write)
-- modules/inspections/flows/index.md
-- modules/inspections/flows/status-machine.md
-- modules/inspections/flows/deficiency-lifecycle.md
-- modules/inspections/flows/massachusetts-email.md
-- modules/inspections/models.md
+- modules/orders/api/lifecycle.md               (create, update_inspections, update_deficiencies)
+- modules/orders/api/counts-filters.md          (get_inspection_counts, get_inspection_devices)
+- modules/orders/api/me-specific.md             (regional report group operations)
+- modules/orders/api/emails.md                  (results email, reminder)
+- modules/orders/api/groups.md                  (order group read/write)
+- modules/orders/flows/index.md
+- modules/orders/flows/status-machine.md
+- modules/orders/flows/deficiency-lifecycle.md
+- modules/orders/flows/massachusetts-email.md
+- modules/orders/models.md
 
 Cross-repo links expected:
-- 12 inbound (from upvate-frontend / upvate-mobile services calling these endpoints)
+- 12 inbound (from myapp-frontend / myapp-mobile services calling these endpoints)
 
-### contracts — SUBFOLDER (980 LOC, 4 ViewSets, 3 distinct flows)
+### orders — SUBFOLDER (980 LOC, 4 ViewSets, 3 distinct flows)
 
 Folder shape:
-- modules/contracts/README.md
-- modules/contracts/models.md
-- modules/contracts/api/index.md
-- modules/contracts/api/contract.md          (ContractViewSet: 15 actions)
-- modules/contracts/api/proposal.md          (ProposalViewSet)
-- modules/contracts/api/user-contract.md     (UserContractViewSet)
-- modules/contracts/api/contract-file.md     (ContractFileViewSet)
-- modules/contracts/flows/index.md
-- modules/contracts/flows/proposal-lifecycle.md
-- modules/contracts/flows/renewal-strategy.md
-- modules/contracts/flows/device-assignment.md
+- modules/orders/README.md
+- modules/orders/models.md
+- modules/orders/api/index.md
+- modules/orders/api/order.md          (ContractViewSet: 15 actions)
+- modules/orders/api/invoice.md          (InvoiceViewSet)
+- modules/orders/api/user-order.md     (UserOrderViewSet)
+- modules/orders/api/order-file.md     (OrderFileViewSet)
+- modules/orders/flows/index.md
+- modules/orders/flows/invoice-lifecycle.md
+- modules/orders/flows/renewal-strategy.md
+- modules/orders/flows/device-assignment.md
 
 ### users — FLAT-WITH-SPLITTING (650 LOC, 1 ViewSet, 1 flow)
 
@@ -227,7 +227,7 @@ Folder shape:
 ## Cross-cutting (3)
 
 ### permissions
-Touches modules: inspections, users, billing, contracts (4)
+Touches modules: orders, users, billing, orders (4)
 Will write `cross-cutting/permissions.md` summary.
 Each module's `permissions.md` will be a 1-paragraph stub linking back.
 

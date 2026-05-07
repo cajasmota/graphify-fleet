@@ -10,7 +10,7 @@ Status: PROPOSED   ← change to APPROVED to continue (or reply "approved" in ch
 - {{K}} cross-cutting docs
 - {{R}} reference pages
 - {{H}} how-to pages
-- Estimated tokens: ~{{input}}k input / ~{{output}}k output (~${{$}} with Sonnet)
+- Estimated tokens: ~{{input}}k input / ~{{output}}k output ( {{ $ }} with Sonnet)
 
 ## Modules
 

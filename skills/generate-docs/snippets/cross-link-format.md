@@ -4,7 +4,7 @@
 
 Markdown relative path:
 ```
-[InspectionService.create_inspection](../services.md#create_inspection)
+[OrderService.create_order](../services.md#create_order)
 ```
 
 Always use relative paths so docs work both on GitHub and after directory moves.
@@ -16,8 +16,8 @@ Always use relative paths so docs work both on GitHub and after directory moves.
 
 For module homepages, link to `index.md` if it exists, else to the folder:
 
-✓ `[inspections](../inspections/index.md)` or `[inspections](../inspections/)`
-✗ `[inspections](../inspections/README.md)`
+✓ `[orders](../orders/index.md)` or `[orders](../orders/)`
+✗ `[orders](../orders/README.md)`
 
 ## Cross-repo (within a group)
 
@@ -29,8 +29,8 @@ Resolve via the gfleet registry. Format:
 
 Example mobile → backend:
 ```
-Calls `POST /api/v1/inspections/` (backend handler:
-[`upvate_core.inspections.api.create_inspection`](../../../upvate_core/docs/modules/inspections/api.md#post-apiv1inspections)).
+Calls `POST /api/v1/orders/` (backend handler:
+[`myapp-backend.orders.api.create_order`](../../../myapp-backend/docs/modules/orders/api.md#post-apiv1inspections)).
 ```
 
 To compute the relative path:
@@ -41,9 +41,9 @@ To compute the relative path:
 ## Anchor slug rules (GitHub-flavored)
 
 Heading → anchor:
-- `## Create inspection` → `#create-inspection`
-- `### POST /api/v1/inspections/` → `#post-apiv1inspections`
-- `### \`InspectionService.create_inspection()\`` → `#inspectionservicecreate_inspection`
+- `## Create order` → `#create-order`
+- `### POST /api/v1/orders/` → `#post-apiv1inspections`
+- `### \`OrderService.create_order()\`` → `#inspectionservicecreate_inspection`
 - `### 🟡 Permissions` → `#-permissions` (emoji becomes empty, leading dash)
 - `### handle_event(event_id)` → `#handle_eventevent_id`
 
@@ -55,7 +55,7 @@ Pass 8 verifies anchors against actual headings.
 
 When a glossary term appears in body text:
 ```markdown
-The [inspection](../../<group_docs>/product/glossary.md#inspection) is created in `scheduled` status...
+The [order](../../<group_docs>/product/glossary.md#order) is created in `scheduled` status...
 ```
 
 Only first occurrence in each file. Skip headings, code, existing links.

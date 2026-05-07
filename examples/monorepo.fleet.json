@@ -1,0 +1,25 @@
+{
+  "group": "platform",
+  "repos": [
+    {
+      "path": "~/Code/platform/api-gateway",
+      "slug": "api-gateway",
+      "stack": "go"
+    },
+    {
+      "type": "monorepo",
+      "path": "~/Code/platform/services",
+      "modules": [
+        { "path": "packages/auth-service",     "slug": "auth-service",     "stack": "go" },
+        { "path": "packages/billing-service",  "slug": "billing-service",  "stack": "go" },
+        { "path": "packages/notification-svc", "slug": "notification-svc", "stack": "go" }
+      ]
+    }
+  ],
+  "options": {
+    "wiki_gitignored": true,
+    "watchers": true,
+    "windsurf": true,
+    "claude_code": true
+  }
+}

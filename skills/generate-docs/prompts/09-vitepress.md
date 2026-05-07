@@ -113,36 +113,36 @@ function generateModuleSidebar() {
 
 The skill should write the sidebar **statically** (resolved at generation time), not generate it dynamically — VitePress builds happen on developer machines that may not have `fs` access to the dynamic generator.
 
-Example resolved sidebar for `upvate-core`:
+Example resolved sidebar for `myapp-backend`:
 
 ```typescript
 sidebar: {
   '/modules/': [
     {
-      text: 'Inspections',
+      text: 'Orders',
       collapsed: false,
       items: [
-        { text: 'Overview', link: '/modules/inspections/' },
-        { text: 'Models', link: '/modules/inspections/models' },
+        { text: 'Overview', link: '/modules/orders/' },
+        { text: 'Models', link: '/modules/orders/models' },
         {
           text: 'API',
           collapsed: true,
           items: [
-            { text: 'Index', link: '/modules/inspections/api/' },
-            { text: 'Lifecycle', link: '/modules/inspections/api/lifecycle' },
-            { text: 'Counts & filters', link: '/modules/inspections/api/counts-filters' },
-            { text: 'ME-specific', link: '/modules/inspections/api/me-specific' },
-            { text: 'Emails', link: '/modules/inspections/api/emails' },
-            { text: 'Groups', link: '/modules/inspections/api/groups' },
+            { text: 'Index', link: '/modules/orders/api/' },
+            { text: 'Lifecycle', link: '/modules/orders/api/lifecycle' },
+            { text: 'Counts & filters', link: '/modules/orders/api/counts-filters' },
+            { text: 'ME-specific', link: '/modules/orders/api/me-specific' },
+            { text: 'Emails', link: '/modules/orders/api/emails' },
+            { text: 'Groups', link: '/modules/orders/api/groups' },
           ]
         },
         {
           text: 'Flows',
           collapsed: true,
           items: [
-            { text: 'Status machine', link: '/modules/inspections/flows/status-machine' },
-            { text: 'Deficiency lifecycle', link: '/modules/inspections/flows/deficiency-lifecycle' },
-            { text: 'Massachusetts email', link: '/modules/inspections/flows/massachusetts-email' },
+            { text: 'Status machine', link: '/modules/orders/flows/status-machine' },
+            { text: 'Deficiency lifecycle', link: '/modules/orders/flows/deficiency-lifecycle' },
+            { text: 'Region2 email', link: '/modules/orders/flows/massachusetts-email' },
           ]
         },
       ]
@@ -161,9 +161,9 @@ sidebar: {
 
 ```
 VitePress sites configured:
-  - upvate-core/docs/      (cd upvate_core/docs && npm install && npm run docs:dev)
-  - upvate-frontend/docs/
-  - upvate-mobile/docs/
+  - myapp-backend/docs/      (cd myapp-backend/docs && npm install && npm run docs:dev)
+  - myapp-frontend/docs/
+  - myapp-mobile/docs/
   - <group-docs-path>/     (group-level)
 
 To preview: cd <docs-root> && npm install && npm run docs:dev

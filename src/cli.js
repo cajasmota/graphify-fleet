@@ -11,6 +11,7 @@ import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './sk
 import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
+import { onboard } from './onboard.js';
 
 const VERSION = '0.2.0';
 
@@ -24,7 +25,8 @@ function help() {
     log.say('  Omit the argument entirely to fan out across all registered groups.');
     log.say('');
     log.say('SETUP');
-    log.say('  wizard                              interactive setup — creates a config and installs');
+    log.say('  wizard                              interactive first-time setup (creates config + installs)');
+    log.say('  onboard   [path]                    join an existing group after git clone (reads .gfleet/group.json)');
     log.say('  doctor                              check prerequisites');
     log.say('  install   <config.json>             install fleet group + register it');
     log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs (purge = also delete graphify-out)');
@@ -136,6 +138,7 @@ export async function main(argv) {
             case 'help': case '-h': case '--help': help(); break;
             case 'doctor':    doctor(); break;
             case 'wizard': case 'new': await wizard(); break;
+            case 'onboard': await onboard(args[0] ?? '.'); break;
             case 'list': case 'ls': ops.list(); break;
             case 'install': {
                 if (!args[0]) die('usage: gfleet install <config.json>');

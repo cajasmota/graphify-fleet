@@ -27,7 +27,7 @@ How to use — apply to the heading:
 ```markdown
 ## 🟡 Capacity check race
 
-The capacity check uses `select_for_update` on the inspector row, which
+The capacity check uses `select_for_update` on the owner row, which
 *appears* to prevent concurrent overbooking. *Verified only in single-process
 test; behavior under multi-pod load not confirmed.*
 ```
@@ -51,7 +51,7 @@ Use when source code was not fully read because of budget/context constraints. *
 ```markdown
 ## 🔴 INCOMPLETE — ContractViewSet additional actions
 
-Source file `core/contracts/views/contract_viewset.py` lines 143-980 not yet read.
+Source file `core/orders/views/order_viewset.py` lines 143-980 not yet read.
 Unread actions (must be documented before this file is considered complete):
 - cancel
 - get_extras
@@ -65,7 +65,7 @@ Unread actions (must be documented before this file is considered complete):
 - delete_note
 - get_notes
 
-Re-run with: `/generate-docs --section modules/contracts/api.contract.md`
+Re-run with: `/generate-docs --section modules/orders/api.order.md`
 ```
 
 A named gap is always better than a false summary.
@@ -83,13 +83,13 @@ Both markers are collected, but separately:
 
 ```
 Flagged 🟡 for review (5):
-  - upvate-core/docs/modules/inspections/services.md "Capacity check race"
-  - upvate-core/docs/modules/billing/api.md "Discount calculation"
+  - myapp-backend/docs/modules/orders/services.md "Capacity check race"
+  - myapp-backend/docs/modules/billing/api.md "Discount calculation"
 
 Incomplete 🔴 (requires follow-up) (3):
-  - upvate-core/docs/modules/contracts/api.contract.md   [11 unread actions: cancel, get_extras, devices, ...]
-  - upvate-core/docs/modules/scheduling/api/index.md     [all @actions unread — file is 3,472 lines, needs split]
-  - upvate-core/docs/modules/mobile-api/README.md        [all @actions unread]
+  - myapp-backend/docs/modules/orders/api.order.md   [11 unread actions: cancel, get_extras, devices, ...]
+  - myapp-backend/docs/modules/scheduling/api/index.md     [all @actions unread — file is 3,472 lines, needs split]
+  - myapp-backend/docs/modules/mobile-api/README.md        [all @actions unread]
 ```
 
 The 🔴 list tells the user (and the next agent) exactly what to target with `--section` or `--module` on the next run.

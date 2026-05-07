@@ -31,18 +31,18 @@ Present these one at a time and wait for the answer to each:
 1. In one sentence, what does this product do? (Plain language. No jargon.)
 
 2. Who are the primary users? (e.g., "property managers running periodic
-   inspections", "internal ops team")
+   orders", "internal ops team")
 
 3. What are the 3-5 main user-facing features or capabilities?
 
 4. Are there any domain terms you want me to use consistently?
-   (e.g., "always 'inspection' not 'audit'; 'client' is the customer,
-   'inspector' is the field worker")
+   (e.g., "always 'order' not 'audit'; 'customer' is the customer,
+   'owner' is the field worker")
 
 5. Is there any context I should know that isn't obvious from the code?
    (e.g., "we're mid-migration from system X to system Y",
    "compliance with regulation Z is the reason for the audit log",
-   "billing logic is intentionally complex due to legacy contracts")
+   "billing logic is intentionally complex due to legacy orders")
 ```
 
 For question 1, propose your hypothesis as a starting point: *"From the
@@ -61,11 +61,11 @@ Write `~/.graphify-fleet/groups/<group>/docs-config.json`:
     "primary_users": "...",
     "features": ["...", "...", "..."],
     "vocabulary": {
-      "preferred_terms": ["inspection", "client", "inspector"],
+      "preferred_terms": ["order", "customer", "owner"],
       "avoid_terms": ["audit"],
       "definitions": {
-        "client": "The paying customer",
-        "inspector": "The field worker performing inspections"
+        "customer": "The paying customer",
+        "owner": "The field worker performing orders"
       }
     },
     "context_notes": "..."

@@ -69,7 +69,7 @@ Per-field validation:
 
 **Side effects** (write actions only — beyond the primary record):
 - {{e.g., creates ContractNote with author=request.user, system=True}}
-- {{e.g., fires inspection.created signal}}
+- {{e.g., fires order.created signal}}
 - {{e.g., queues send_invite celery task}}
 - ... or "**None**"
 

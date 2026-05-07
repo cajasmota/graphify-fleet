@@ -1,5 +1,5 @@
 // Per-repo integrations: ignores, .mcp.json, Claude/Windsurf, git hooks, remerge helper.
-import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, rmdirSync, chmodSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, rmSync, rmdirSync, chmodSync, appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import {
     TEMPLATES_DIR, LOCAL_BIN, GROUPS_DIR, IS_WIN,
@@ -213,6 +213,60 @@ export function checkMergeDriverStatus(gitRoot) {
     const f = join(gitRoot, '.gitattributes');
     const attribOk = existsSync(f) && readFileSync(f, 'utf8').includes('merge=graphify');
     return { registered, attribOk };
+}
+
+// ------------------------------------------------------------
+// .gfleet/group.json — portable, committed manifest
+// ------------------------------------------------------------
+// Travels with the repo (committed). Contains group identity + siblings
+// (slugs, stacks, optional clone_urls). Does NOT contain absolute paths,
+// since those vary per teammate. `gfleet onboard` reads this to bootstrap
+// a teammate after `git clone`.
+
+export function writeGroupManifest(repo, group, options, thisRepo, allRepos) {
+    const dir = join(repo, '.gfleet');
+    ensureDir(dir);
+    const manifest = {
+        version: 1,
+        group,
+        this: { slug: thisRepo.slug, stack: thisRepo.stack },
+        siblings: allRepos
+            .filter(r => r.slug !== thisRepo.slug)
+            .map(r => ({ slug: r.slug, stack: r.stack, clone_url: null })),
+        options: {
+            wiki_gitignored: options.wiki_gitignored,
+            watchers:        options.watchers,
+            windsurf:        options.windsurf,
+            claude_code:     options.claude_code,
+            docs:            options.docs ? { enabled: true } : null,
+        },
+    };
+    // Preserve clone_urls if a previous manifest set them (don't overwrite manual edits)
+    const f = join(dir, 'group.json');
+    if (existsSync(f)) {
+        try {
+            const prev = readJson(f);
+            for (const s of manifest.siblings) {
+                const prevSibling = (prev.siblings ?? []).find(p => p.slug === s.slug);
+                if (prevSibling?.clone_url) s.clone_url = prevSibling.clone_url;
+            }
+        } catch {}
+    }
+    writeJson(f, manifest);
+    log.info(`.gfleet/group.json written (commit it so teammates can run gfleet onboard)`);
+}
+
+export function readGroupManifest(repo) {
+    const f = join(repo, '.gfleet', 'group.json');
+    if (!existsSync(f)) return null;
+    return readJson(f);
+}
+
+export function removeGroupManifest(repo) {
+    const f = join(repo, '.gfleet', 'group.json');
+    if (existsSync(f)) {
+        try { rmSync(f, { force: true }); } catch {}
+    }
 }
 
 export function installGitHooks(repo, group, helperPath) {

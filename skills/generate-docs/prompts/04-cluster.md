@@ -78,7 +78,7 @@ Documentation must be **detailed enough to explain how a report is generated, wh
   - Code reference: `path/to/file.py:LINE`
 
 - For complex queries (joins, aggregates, raw SQL, ORM with prefetch_related): walkthrough.
-  - State the query in English first ("Returns inspections in the last 30 days for clients who...")
+  - State the query in English first ("Returns orders in the last 30 days for clients who...")
   - Then show the key code, annotated.
   - Explain non-obvious choices (why prefetch, why exists() vs count(), why select_for_update).
 
@@ -101,7 +101,7 @@ The earlier failure mode: ViewSet endpoints were treated as boilerplate ("method
 | Question | Non-trivial if... |
 |----------|-------------------|
 | What filters the queryset / what conditions gate the read? | More than `filter(group=group)` — any business condition, subquery, exclusion, role-based scoping |
-| What are the counter / aggregation semantics? | Units being counted are not what the field name implies (e.g. device counts returned as "proposal counts") |
+| What are the counter / aggregation semantics? | Units being counted are not what the field name implies (e.g. device counts returned as "invoice counts") |
 | What does this write action do beyond saving the record? | Creates related records, sends emails, fires signals, enforces consistency rules, invalidates caches |
 | Is there a fallback or dual-path strategy? | Union queries, conditional logic branching on input params, year-boundary handling, cache vs DB fallback |
 | Are there non-obvious parameter interactions? | Params that change the query strategy entirely (e.g. `proposal_status=renew` triggers completely different queryset logic) |
@@ -112,19 +112,19 @@ The earlier failure mode: ViewSet endpoints were treated as boilerplate ("method
 
 ❌ Insufficient (current failure mode):
 ```markdown
-### GET /api/v1/proposals/?proposal_status=renew
-List proposals for the requesting group.
+### GET /api/v1/invoices/?proposal_status=renew
+List invoices for the requesting group.
 ```
 
 ✅ Required depth:
 ```markdown
-### GET /api/v1/proposals/?proposal_status=renew
+### GET /api/v1/invoices/?proposal_status=renew
 
-Returns contracts eligible for renewal for `year`. **Requires `year` param.**
+Returns orders eligible for renewal for `year`. **Requires `year` param.**
 
 Uses a **dual-queryset union** (deliberate; see [flows/renewal-strategy.md](../flows/renewal-strategy.md)):
-- Group 1: contracts with `proposal_status='renew'`, `status='proposal'`, `contract_year=year`
-- Group 2 (fallback): contracts whose `end_date` fell in `year-1` and have no current-year renewal yet — prevents buildings from disappearing from the renewal queue when their prior contract expires before a new one is created.
+- Group 1: orders with `proposal_status='renew'`, `status='invoice'`, `contract_year=year`
+- Group 2 (fallback): orders whose `end_date` fell in `year-1` and have no current-year renewal yet — prevents buildings from disappearing from the renewal queue when their prior order expires before a new one is created.
 
 Results are serialized in parallel via `ThreadPoolExecutor`.
 
@@ -159,8 +159,8 @@ Per-field validation rules.
 - `proposal_status=renew` — switches to dual-queryset union (see above)
 
 **Preconditions / gating** (model-state conditions that must be true):
-- Active devices must exist on the building (else `POST /proposals/` returns 400)
-- EmailTemplate record must exist for `(group, jurisdiction)` (else email send is silently skipped)
+- Active devices must exist on the building (else `POST /invoices/` returns 400)
+- EmailTemplate record must exist for `(group, region)` (else email send is silently skipped)
 
 **Response 200** (or 201, etc.):
 ```json
@@ -175,9 +175,9 @@ Per-field validation rules.
 
 **Side effects**:
 - Creates `ContractNote` with `author=request.user, system=True` (for cancel)
-- Auto-assigns all active building devices to the new contract
+- Auto-assigns all active building devices to the new order
 - Auto-adds users with `types='contract_proposals'` as recipients
-- Fires `inspection.created` signal
+- Fires `order.created` signal
 - Queues `send_invite` celery task
 
 **Handler**: [`<ClassName>.<method>`](../../<source-path>#L<line>)
@@ -263,10 +263,10 @@ This module exposes <N> ViewSet/controller classes mounted at `<base path>`:
 
 | Class | Purpose | Doc |
 |-------|---------|-----|
-| `ContractViewSet` | Contract CRUD + lifecycle actions | [contract.md](contract.md) |
-| `ProposalViewSet` | Proposal listing, counting, renewal strategy | [proposal.md](proposal.md) |
-| `UserContractViewSet` | User-side contract assignment views | [user-contract.md](user-contract.md) |
-| `ContractFileViewSet` | File upload/management | [contract-file.md](contract-file.md) |
+| `ContractViewSet` | Contract CRUD + lifecycle actions | [order.md](order.md) |
+| `InvoiceViewSet` | Proposal listing, counting, renewal strategy | [invoice.md](invoice.md) |
+| `UserOrderViewSet` | User-side order assignment views | [user-order.md](user-order.md) |
+| `OrderFileViewSet` | File upload/management | [order-file.md](order-file.md) |
 <!-- auto:end -->
 
 <!-- auto:start id=mounting -->
@@ -276,7 +276,7 @@ Reads `urls.py` to show actual base paths and registration:
 <!-- auto:end -->
 ```
 
-### `api/<unit>.md` (e.g. `api/contract.md`) — one file per ViewSet
+### `api/<unit>.md` (e.g. `api/order.md`) — one file per ViewSet
 
 ```markdown
 <!-- docs:auto -->
@@ -285,7 +285,7 @@ Reads `urls.py` to show actual base paths and registration:
 <!-- auto:start id=summary -->
 *What this ViewSet owns + which models it operates on. One paragraph.*
 
-Source: [`core/contracts/views/contract_viewset.py:<line>`](../../../core/contracts/views/contract_viewset.py#L<line>)
+Source: [`core/orders/views/order_viewset.py:<line>`](../../../core/orders/views/order_viewset.py#L<line>)
 Auth: ...
 <!-- auto:end -->
 
@@ -296,7 +296,7 @@ This ViewSet has 15 public actions. All must appear below. If you see this
 list and any item below does not have a corresponding section, the file is
 INCOMPLETE — re-run `/generate-docs --section <this-file>`.
 
-- [ ] `list` — paginated contract list
+- [ ] `list` — paginated order list
 - [ ] `retrieve`
 - [ ] `create`
 - [ ] `update`
@@ -316,15 +316,15 @@ INCOMPLETE — re-run `/generate-docs --section <this-file>`.
 <!-- auto:start id=actions -->
 ## Actions
 
-### GET `/api/v1/contracts/`
+### GET `/api/v1/orders/`
 ... full per-R6 template ...
 
-### POST `/api/v1/contracts/`
+### POST `/api/v1/orders/`
 ... full per-R6 template ...
 
-### PUT `/api/v1/contracts/{id}/cancel/`
+### PUT `/api/v1/orders/{id}/cancel/`
 
-Cancels a contract. Sets `status='cancelled'`, `end_date=cancel_date`. **Side effect**: auto-creates a system `ContractNote` with `author=request.user, system=True` recording the cancellation reason.
+Cancels a order. Sets `status='cancelled'`, `end_date=cancel_date`. **Side effect**: auto-creates a system `ContractNote` with `author=request.user, system=True` recording the cancellation reason.
 
 **Path params**: `id` (int, required) — Contract ID.
 
@@ -333,18 +333,18 @@ Cancels a contract. Sets `status='cancelled'`, `end_date=cancel_date`. **Side ef
 { "cancel_date": "YYYY-MM-DD", "reason": "string" }
 ```
 
-**Preconditions**: contract status must be `active` or `proposal` (else 409).
+**Preconditions**: order status must be `active` or `invoice` (else 409).
 
-**Response 200**: serialized contract with new status.
+**Response 200**: serialized order with new status.
 
 **Response 4xx**:
-- 404 — contract not found
-- 409 — contract already cancelled or completed
+- 404 — order not found
+- 409 — order already cancelled or completed
 
 **Side effects**:
-- `ContractNote.objects.create(contract=..., author=user, system=True, body=reason)`
+- `ContractNote.objects.create(order=..., author=user, system=True, body=reason)`
 
-**Handler**: [`ContractViewSet.cancel`](../../../core/contracts/views/contract_viewset.py#L<line>)
+**Handler**: [`ContractViewSet.cancel`](../../../core/orders/views/order_viewset.py#L<line>)
 
 (continue for every action on the checklist)
 <!-- auto:end -->
@@ -363,7 +363,7 @@ Cancels a contract. Sets `status='cancelled'`, `end_date=cancel_date`. **Side ef
 <!-- auto:start id=problem -->
 ## The problem this solves
 
-Year-transition gap: when a contract's `end_date` falls in year N-1 but no year-N renewal proposal has been created yet, the building disappears from the renewal queue under a naive filter. The dual queryset closes the gap.
+Year-transition gap: when a order's `end_date` falls in year N-1 but no year-N renewal invoice has been created yet, the building disappears from the renewal queue under a naive filter. The dual queryset closes the gap.
 <!-- auto:end -->
 
 <!-- auto:start id=algorithm -->
@@ -371,8 +371,8 @@ Year-transition gap: when a contract's `end_date` falls in year N-1 but no year-
 
 ```mermaid
 flowchart TD
-  Start[GET /proposals/?proposal_status=renew&year=Y] --> Q1[Group 1: contracts where<br/>proposal_status='renew'<br/>status='proposal'<br/>contract_year=Y]
-  Start --> Q2[Group 2: contracts where<br/>end_date in Y-1<br/>no Y renewal exists]
+  Start[GET /invoices/?proposal_status=renew&year=Y] --> Q1[Group 1: orders where<br/>proposal_status='renew'<br/>status='invoice'<br/>contract_year=Y]
+  Start --> Q2[Group 2: orders where<br/>end_date in Y-1<br/>no Y renewal exists]
   Q1 --> Union[UNION]
   Q2 --> Union
   Union --> Serialize[ThreadPoolExecutor parallel serialize]
@@ -387,7 +387,7 @@ Step-by-step:
 <!-- auto:start id=code-refs -->
 ## Code references
 
-- Main entry: [`ProposalViewSet.list`](../api/proposal.md#get-apiv1proposals)
+- Main entry: [`InvoiceViewSet.list`](../api/invoice.md#get-apiv1proposals)
 - Helper: ...
 <!-- auto:end -->
 ```
@@ -496,9 +496,9 @@ If your **context window** is filling up mid-class (degrades quality on subseque
 
 Print one line per module:
 ```
-inspections: api/lifecycle.md, api/counts-filters.md, api/me-specific.md, api/emails.md, api/groups.md, flows/status-machine.md, flows/deficiency-lifecycle.md, flows/massachusetts-email.md, models.md, README.md — 0 🔴, 3 🟡 — 7 save-results
-contracts: api/contract.md, api/proposal.md, api/user-contract.md, api/contract-file.md, flows/proposal-lifecycle.md, flows/renewal-strategy.md, flows/device-assignment.md, models.md, README.md — 0 🔴, 1 🟡 — 11 save-results
-buildings: api/building-crud.md, api/dob-lookup.md, api/files.md, api/notes.md, api/alternate-addresses.md, README.md, models.md — 1 🔴 (api/dob-lookup.md: external API contract not fully traced) — 4 save-results
+orders: api/lifecycle.md, api/counts-filters.md, api/me-specific.md, api/emails.md, api/groups.md, flows/status-machine.md, flows/deficiency-lifecycle.md, flows/massachusetts-email.md, models.md, README.md — 0 🔴, 3 🟡 — 7 save-results
+orders: api/order.md, api/invoice.md, api/user-order.md, api/order-file.md, flows/invoice-lifecycle.md, flows/renewal-strategy.md, flows/device-assignment.md, models.md, README.md — 0 🔴, 1 🟡 — 11 save-results
+buildings: api/building-crud.md, api/dob-lookup.md, api/files.md, api/notes.md, api/alternate-addresses.md, README.md, models.md — 1 🔴 (api/dob-lookup.md: external API order not fully traced) — 4 save-results
 billing: unchanged, skipped
 ```
 

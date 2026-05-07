@@ -11,6 +11,7 @@ import {
     removeWindsurfFiles, removeWindsurfGlobalMcp,
     ensureClaudeRules, ensureAgentsRules,
     installMergeDriver, removeMergeDriver,
+    writeGroupManifest, removeGroupManifest,
 } from './integrations.js';
 import { installWatcher, uninstallWatcher } from './watchers.js';
 
@@ -76,6 +77,9 @@ export async function install(configPath) {
 
         if (cfg.options.watchers)    installWatcher(cfg.group, r.path, r.slug);
 
+        // Write portable manifest for teammate onboarding (commit this).
+        writeGroupManifest(r.path, cfg.group, { ...cfg.options, docs: cfg.docs }, r, cfg.repos);
+
         // legacy global graph cleanup (was used by older gfleet versions)
         run('graphify', ['global', 'remove', r.slug]);
     }
@@ -114,6 +118,7 @@ export function uninstall(configPath, opts = {}) {
         }
         removeMcpEntry(r.path);
         removeWindsurfFiles(r.path);
+        removeGroupManifest(r.path);
         uninstallWatcher(cfg.group, r.slug);
         if (opts.purge) {
             try { rmSync(join(r.path, 'graphify-out'), { recursive: true, force: true }); log.info('graphify-out/ purged'); } catch {}
