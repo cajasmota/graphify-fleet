@@ -14,6 +14,20 @@ import {
 
 function mkTmp() { return mkdtempSync(join(tmpdir(), 'gfleet-int-')); }
 
+// Isolate `~/.graphify-fleet` writes so writeMcpJson's symlink-creation
+// doesn't pollute the user's real state during tests.
+function withState(fn) {
+    const tmpState = mkdtempSync(join(tmpdir(), 'gfleet-int-state-'));
+    const prev = process.env.GFLEET_STATE_DIR;
+    process.env.GFLEET_STATE_DIR = tmpState;
+    try { return fn(); }
+    finally {
+        if (prev === undefined) delete process.env.GFLEET_STATE_DIR;
+        else process.env.GFLEET_STATE_DIR = prev;
+        try { rmSync(tmpState, { recursive: true, force: true }); } catch {}
+    }
+}
+
 // --- updateGitignore ---
 
 test('updateGitignore: fresh file', () => {
@@ -53,60 +67,72 @@ test('updateGitignore: preserves user content', () => {
 // --- writeMcpJson / removeMcpEntry ---
 
 test('writeMcpJson: fresh creates file with group server only (no per-repo)', () => {
-    const repo = mkTmp();
-    try {
-        writeMcpJson(repo, '/tmp/group.json', 'my-repo', 'my-group');
-        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
-        // Group MCP only — repo-local queries use repo_filter against it.
-        assert.ok(obj.mcpServers['graphify-my-group']);
-        assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
-    } finally { rmSync(repo, { recursive: true, force: true }); }
+    withState(() => {
+        const repo = mkTmp();
+        try {
+            writeMcpJson(repo, '/tmp/group.json', 'my-repo', 'my-group');
+            const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+            // Group MCP only — repo-local queries use repo_filter against it.
+            assert.ok(obj.mcpServers['graphify-my-group']);
+            assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
+            // Args now point at the gfleet-owned server script + graphs-dir.
+            const args = obj.mcpServers['graphify-my-group'].args;
+            assert.ok(args.some(a => a.endsWith('server.py')), 'expected server.py in args');
+            assert.ok(args.includes('--group'));
+            assert.ok(args.includes('my-group'));
+        } finally { rmSync(repo, { recursive: true, force: true }); }
+    });
 });
 
 test('writeMcpJson: preserves non-graphify entries', () => {
-    const repo = mkTmp();
-    try {
-        writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
-            mcpServers: { other: { command: 'foo', args: [] } },
-        }));
-        writeMcpJson(repo, '/tmp/g.json', 'r', 'g');
-        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
-        assert.ok(obj.mcpServers.other);
-        assert.ok(obj.mcpServers['graphify-g']);
-        // No per-repo entry written under the new single-MCP model.
-        assert.equal(obj.mcpServers['graphify-r'], undefined);
-    } finally { rmSync(repo, { recursive: true, force: true }); }
+    withState(() => {
+        const repo = mkTmp();
+        try {
+            writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
+                mcpServers: { other: { command: 'foo', args: [] } },
+            }));
+            writeMcpJson(repo, '/tmp/g.json', 'r', 'g');
+            const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+            assert.ok(obj.mcpServers.other);
+            assert.ok(obj.mcpServers['graphify-g']);
+            assert.equal(obj.mcpServers['graphify-r'], undefined);
+        } finally { rmSync(repo, { recursive: true, force: true }); }
+    });
 });
 
 test('writeMcpJson: heals leftover per-repo + stale graphify-* entries from older gfleet versions', () => {
-    const repo = mkTmp();
-    try {
-        writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
-            mcpServers: {
-                'graphify-my-repo':       { command: 'old', args: [] },
-                'graphify-old-other-repo': { command: 'old', args: [] },
-                other:                    { command: 'foo', args: [] },
-            },
-        }));
-        writeMcpJson(repo, '/tmp/g.json', 'my-repo', 'my-group');
-        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
-        assert.ok(obj.mcpServers['graphify-my-group']);
-        assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
-        assert.equal(obj.mcpServers['graphify-old-other-repo'], undefined);
-        assert.ok(obj.mcpServers.other);  // non-graphify entries are preserved
-    } finally { rmSync(repo, { recursive: true, force: true }); }
+    withState(() => {
+        const repo = mkTmp();
+        try {
+            writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
+                mcpServers: {
+                    'graphify-my-repo':       { command: 'old', args: [] },
+                    'graphify-old-other-repo': { command: 'old', args: [] },
+                    other:                    { command: 'foo', args: [] },
+                },
+            }));
+            writeMcpJson(repo, '/tmp/g.json', 'my-repo', 'my-group');
+            const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+            assert.ok(obj.mcpServers['graphify-my-group']);
+            assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
+            assert.equal(obj.mcpServers['graphify-old-other-repo'], undefined);
+            assert.ok(obj.mcpServers.other);
+        } finally { rmSync(repo, { recursive: true, force: true }); }
+    });
 });
 
 test('writeMcpJson: removes legacy single-key graphify entry', () => {
-    const repo = mkTmp();
-    try {
-        writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
-            mcpServers: { graphify: { command: 'old', args: [] } },
-        }));
-        writeMcpJson(repo, '/tmp/g.json', 'r', 'g');
-        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
-        assert.equal(obj.mcpServers.graphify, undefined);
-    } finally { rmSync(repo, { recursive: true, force: true }); }
+    withState(() => {
+        const repo = mkTmp();
+        try {
+            writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
+                mcpServers: { graphify: { command: 'old', args: [] } },
+            }));
+            writeMcpJson(repo, '/tmp/g.json', 'r', 'g');
+            const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+            assert.equal(obj.mcpServers.graphify, undefined);
+        } finally { rmSync(repo, { recursive: true, force: true }); }
+    });
 });
 
 test('removeMcpEntry: preserves non-graphify entries', () => {

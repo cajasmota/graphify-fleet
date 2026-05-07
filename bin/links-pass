@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// Internal CLI shim — run the cross-repo import link pass for a group.
+// Usage: links-pass <group> [<graphs-dir>]
+// Default graphs-dir is `~/.graphify-fleet/groups/<group>/graphs`.
+import { join, resolve, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const { runImportLinkPass } = await import(resolve(here, '..', 'src', 'links.js'));
+
+const [, , group, graphsDirArg] = process.argv;
+if (!group) {
+    console.error('usage: links-pass <group> [<graphs-dir>]');
+    process.exit(2);
+}
+const graphsDir = graphsDirArg
+    ? resolve(graphsDirArg)
+    : join(process.env.GFLEET_STATE_DIR ?? join(homedir(), '.graphify-fleet'), 'groups', group, 'graphs');
+
+try {
+    const n = runImportLinkPass(group, graphsDir);
+    console.log(`links-pass: wrote ${n} import-method links for group '${group}'`);
+} catch (e) {
+    console.error(`links-pass failed: ${e.message}`);
+    process.exit(1);
+}

@@ -3,7 +3,9 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, renameSyn
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyPatch as applyGraphifyPatch } from './patches/graphify-mcp-enhancements.js';
+// Patch system removed: the MCP server is now gfleet-owned (a fork of
+// upstream `serve.py` lives at `src/mcp-server/server.py`), so there is
+// nothing to patch in graphify's site-packages.
 
 export const HOME = homedir();
 export const PLATFORM = platform();
@@ -235,22 +237,9 @@ export function graphifyPython() {
     return which('python3') || which('python');
 }
 
-// Pinned graphify version. Bump this only after re-validating the
-// src/patches/graphify-repo-filter.js anchors against the new release.
-// gfleet patch graphify will print a warning if installed != pinned.
+// Pinned graphify version. We still pin for predictable extraction +
+// merge-driver behavior; the MCP layer is independent (gfleet-owned fork).
 export const GRAPHIFY_PIN = '0.7.9';
-
-// Re-apply the repo-filter patch after any uv tool install of graphifyy.
-// `--reinstall` (and even initial install) replaces site-packages and wipes
-// the patch, so we always re-apply to keep it self-healing. Failures here
-// are non-fatal — log and continue.
-function reapplyGraphifyPatch() {
-    try {
-        applyGraphifyPatch({ verbose: false });
-    } catch (e) {
-        log.warn(`graphify patch re-apply failed (continuing): ${e.message}`);
-    }
-}
 
 export function ensureGraphify(verbose = true) {
     if (!which('uv')) die('uv is required. install: curl -LsSf https://astral.sh/uv/install.sh | sh');
@@ -258,24 +247,20 @@ export function ensureGraphify(verbose = true) {
     if (!graphifyBin()) {
         if (verbose) log.info(`installing ${spec} via uv (with mcp + watchdog extras)...`);
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog']);
-        reapplyGraphifyPatch();
         return;
     }
     const py = graphifyPython();
-    // Check version matches pin
     const versionResult = run(py, ['-c', `from importlib.metadata import version; print(version('graphifyy'))`]);
     const installed = versionResult.code === 0 ? versionResult.stdout.trim() : null;
     if (installed && installed !== GRAPHIFY_PIN) {
-        if (verbose) log.warn(`graphifyy ${installed} is installed; gfleet pins to ${GRAPHIFY_PIN}. Pinning now (will re-apply patch after).`);
+        if (verbose) log.warn(`graphifyy ${installed} is installed; gfleet pins to ${GRAPHIFY_PIN}. Repinning.`);
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
-        reapplyGraphifyPatch();
         return;
     }
     const ok = runOk(py, ['-c', 'import mcp, watchdog']);
     if (!ok) {
         if (verbose) log.info('adding mcp + watchdog extras to graphifyy...');
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
-        reapplyGraphifyPatch();
     }
 }
 

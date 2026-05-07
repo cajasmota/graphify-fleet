@@ -6,25 +6,37 @@ import {
 } from './util.js';
 import {
     writeGraphifyignore, updateGitignore, writeMcpJson,
-    installClaudeSkill, writeWindsurfFiles, writeRemergeHelper, writeMergeDaemonScript, installGitHooks,
+    installClaudeSkill, writeWindsurfFiles, installGitHooks,
     addWindsurfGlobalMcp, ensureWindsurfSkill, removeGitHooks, removeMcpEntry,
     removeWindsurfFiles, removeWindsurfGlobalMcp,
     ensureClaudeRules, ensureAgentsRules,
     installMergeDriver, removeMergeDriver,
     writeGroupManifest, removeGroupManifest,
+    ensureGroupGraphsDir, groupGraphsDir, migrateLegacyArtifacts,
 } from './integrations.js';
-import { installWatcher, uninstallWatcher, installMergeDaemon, uninstallMergeDaemon } from './watchers.js';
+import { installWatcher, uninstallWatcher } from './watchers.js';
+import { runImportLinkPass } from './links.js';
 
 export async function install(configPath) {
     ensureGraphify();
     const cfg = loadConfig(configPath);
 
     log.say(`installing fleet group: ${cfg.group}`);
-    log.say(`merged graph -> ${cfg.groupGraph}`);
     log.hr();
 
     ensureDir(GROUPS_DIR);
-    const helper = writeRemergeHelper(cfg.group, cfg.groupGraph, cfg.repos);
+    // Clean up artifacts from the pre-fork architecture (patch state, merge
+    // daemon launchd plist / systemd unit / scheduled task, merge helper
+    // scripts, the legacy merged graph file). Idempotent.
+    const migrated = migrateLegacyArtifacts(cfg.group);
+    if (migrated.removed.length > 0) {
+        log.info(`migrated legacy artifacts: ${migrated.removed.length} item(s) cleaned up`);
+        for (const r of migrated.removed) log.dim(`    - ${r}`);
+    }
+    // Per-repo graphs-dir for this group: one symlink per slug pointing at
+    // <repo>/graphify-out/graph.json. The MCP server reads from this dir.
+    const graphsDir = ensureGroupGraphsDir(cfg.group, cfg.repos);
+    log.info(`graphs-dir: ${graphsDir}`);
 
     // Track .git roots we've already installed hooks into (monorepo modules
     // share a single .git at the monorepo root — install hooks once).
@@ -68,7 +80,7 @@ export async function install(configPath) {
 
         // Hooks: install once per .git root. Monorepo modules sharing .git get one hook.
         if (!hookedGitRoots.has(gitRoot)) {
-            installGitHooks(gitRoot, cfg.group, helper);
+            installGitHooks(gitRoot, cfg.group, null);
             installMergeDriver(gitRoot);
             hookedGitRoots.add(gitRoot);
         } else {
@@ -103,27 +115,22 @@ export async function install(configPath) {
     }
 
     log.say('');
-    log.info('running initial group merge...');
-    if (process.platform === 'win32') run('powershell', ['-NoProfile', '-File', helper]);
-    else run(helper);
+    log.info('running initial cross-repo link pass...');
+    try {
+        const n = runImportLinkPass(cfg.group, graphsDir);
+        log.info(`links: ${n} cross-repo import/call edges discovered`);
+    } catch (e) { log.warn(`links pass failed (continuing): ${e.message}`); }
 
     if (cfg.options.windsurf) {
         await ensureWindsurfSkill();
-        addWindsurfGlobalMcp(cfg.group, cfg.groupGraph, cfg.repos);
-    }
-
-    // Merge daemon: closes the save->query freshness loop. Watcher rebuilds
-    // per-repo graphs; this daemon merges into the group graph; serve.py's
-    // mtime-reload patch picks up the new group graph on the next MCP call.
-    if (cfg.options.watchers) {
-        const daemonScript = writeMergeDaemonScript(cfg.group, cfg.groupGraph, cfg.repos);
-        installMergeDaemon(cfg.group, daemonScript);
+        addWindsurfGlobalMcp(cfg.group, null, cfg.repos);
     }
 
     registerGroup(cfg.group, configPath);
     log.say('');
     log.ok(`group '${cfg.group}' installed.`);
-    log.info(`merged graph: ${cfg.groupGraph}`);
+    log.info(`graphs-dir:   ${graphsDir}`);
+    log.info(`links file:   ~/.graphify/groups/${cfg.group}-links.json`);
     log.info(`registered:   gfleet status ${cfg.group}   (or just: gfleet status)`);
 }
 
@@ -152,12 +159,14 @@ export function uninstall(configPath, opts = {}) {
         log.info('cleaned');
     }
 
-    uninstallMergeDaemon(cfg.group);
-    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-${cfg.group}`), { force: true }); } catch {}
-    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-${cfg.group}.ps1`), { force: true }); } catch {}
-    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-daemon-${cfg.group}`), { force: true }); } catch {}
-    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-daemon-${cfg.group}.ps1`), { force: true }); } catch {}
-    try { rmSync(cfg.groupGraph, { force: true }); } catch {}
+    // Sweep legacy artifacts (merge daemon, merge-helper scripts, merged
+    // graph file, patch state). migrateLegacyArtifacts is the same routine
+    // install runs; calling it on uninstall keeps cleanup symmetric.
+    migrateLegacyArtifacts(cfg.group);
+    // Drop the per-group graphs-dir + links files for a complete uninstall.
+    try { rmSync(groupGraphsDir(cfg.group), { recursive: true, force: true }); } catch {}
+    try { rmSync(join(GROUPS_DIR, `${cfg.group}-links.json`), { force: true }); } catch {}
+    try { rmSync(join(GROUPS_DIR, `${cfg.group}-link-candidates.json`), { force: true }); } catch {}
     removeWindsurfGlobalMcp(cfg.group);
 
     // unregister from registry

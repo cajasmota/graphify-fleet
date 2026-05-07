@@ -12,8 +12,10 @@ import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
 import { docsInit, docsStatus, docsRun, docsPath, marksStale, docsSilence, docsUnsilence, docsClearStale } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
-import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-mcp-enhancements.js';
 import { onboard } from './onboard.js';
+import { readdirSync } from 'node:fs';
+import { groupGraphsDir, mcpServerPath } from './integrations.js';
+import { GROUPS_DIR } from './util.js';
 import { update } from './update.js';
 import { conventionsList, conventionsAdd, conventionsRemove } from './conventions.js';
 
@@ -86,10 +88,8 @@ function helpAdvanced() {
     log.say('  conventions add [--name X]      stub a new stack, fill via /extend-convention in IDE');
     log.say('  conventions remove              remove a user-added convention');
     log.say('');
-    log.say('GRAPHIFY PATCH  [auto on every ensureGraphify / skills install]');
-    log.say('  patch graphify              apply repo_filter parameter patch (idempotent)');
-    log.say('  patch status                show patch status (applied / partial / unpatched)');
-    log.say('  patch revert                restore graphify from .gfleet-orig backup');
+    log.say('GRAPHIFY PATCH  [DEPRECATED — the MCP server is now gfleet-owned]');
+    log.say('  patch <anything>            no-op; prints a deprecation note');
     log.say('');
     log.say('MONOREPO  [agent surfaces this when modules drift]');
     log.say('  monorepo add    [group] [path]      pick monorepo + select modules');
@@ -104,7 +104,7 @@ function helpAdvanced() {
     log.say('REPAIR / REBUILD');
     log.say('  rebuild   [group|config] [slug]     force AST rebuild (after deletions)');
     log.say('  reset     [group|config] [slug]     wipe graphify-out/ and rebuild from scratch');
-    log.say('  remerge   [group|config]            re-merge group graph (no rebuild)');
+    log.say('  remerge   [group|config]            DEPRECATED — re-runs cross-repo links pass instead');
     log.say('');
     log.say('WATCHERS  [self-healing via launchd KeepAlive / systemd Restart=always]');
     log.say('  start     [group|config]            load watchers');
@@ -139,10 +139,7 @@ function doctor() {
         if (r.code === 0) log.ok('graphify extras: mcp + watchdog');
         else              log.warn('graphify is missing mcp / watchdog extras (gfleet install will fix)');
 
-        const pStatus = graphifyPatchStatus();
-        if (pStatus.state === 'patched')        log.ok(`graphify patched (repo_filter parameter: ${pStatus.applied}/${pStatus.total} hunks)`);
-        else if (pStatus.state === 'partial')   log.warn(`graphify partially patched (${pStatus.applied}/${pStatus.total}) — likely upstream changed. Re-run: gfleet patch graphify`);
-        else if (pStatus.state === 'unpatched') log.warn('graphify unpatched (no repo_filter on MCP tools). Run: gfleet patch graphify');
+        log.ok(`MCP server: gfleet-managed (${mcpServerPath()})`);
     } else {
         log.warn('graphify not installed yet (gfleet install will install it)');
     }
@@ -191,6 +188,25 @@ function doctor() {
         }
     }
     if (drift === 0) log.ok(`all ${groupNames.length} group(s) healthy (paths + .git resolve)`);
+
+    // Per-group MCP / links view.
+    log.hr();
+    for (const name of groupNames) {
+        const gdir = groupGraphsDir(name);
+        let count = 0;
+        try { count = readdirSync(gdir).filter(f => f.endsWith('.json')).length; } catch {}
+        const linksFile = join(GROUPS_DIR, `${name}-links.json`);
+        let edges = 0;
+        let linksOk = false;
+        try {
+            if (existsSync(linksFile)) {
+                const obj = JSON.parse(readFileSync(linksFile, 'utf8'));
+                edges = (obj.links || []).length;
+                linksOk = true;
+            }
+        } catch {}
+        log.say(`  ${name}: ${count} repos in graphs-dir, links file ${linksOk ? `present with ${edges} edges` : 'absent'}`);
+    }
 }
 
 function showRegistryOrHelp() {
@@ -282,23 +298,11 @@ export async function main(argv) {
                 break;
             }
             case 'patch': {
-                const sub = args[0];
-                const target = args[1];
-                if (target && target !== 'graphify') die(`only 'graphify' patch is supported (got: ${target})`);
-                switch (sub) {
-                    case 'graphify':
-                    case 'apply': patchGraphify(); break;
-                    case 'status': {
-                        const s = graphifyPatchStatus();
-                        if (s.state === 'no-graphify') log.warn('graphify not installed');
-                        else if (s.state === 'patched')   log.ok(`graphify patched (${s.applied}/${s.total} hunks) — ${s.path}`);
-                        else if (s.state === 'unpatched') log.warn(`graphify unpatched (run: gfleet patch graphify) — ${s.path}`);
-                        else log.warn(`graphify partially patched (${s.applied}/${s.total}) — graphify upstream may have changed. Run: gfleet patch graphify`);
-                        break;
-                    }
-                    case 'revert': unpatchGraphify(); break;
-                    default: die('usage: gfleet patch {graphify|status|revert}');
-                }
+                // Patch system retired — the MCP server is now gfleet-owned
+                // (see `src/mcp-server/server.py`). Print a deprecation note
+                // and exit 0 so legacy automation does not break.
+                log.warn('gfleet patch: deprecated — the MCP server is now gfleet-owned (no graphify patching needed).');
+                log.info('Run `gfleet doctor` to see MCP server status.');
                 break;
             }
             case 'monorepo': {

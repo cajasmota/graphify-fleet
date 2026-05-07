@@ -4,7 +4,6 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, cpSync, rmSync, statSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { HOME, ROOT_DIR, ensureDir, log, listRegistered, loadConfig } from './util.js';
-import { applyPatch as applyGraphifyPatch } from './patches/graphify-mcp-enhancements.js';
 
 const SKILL_NAME = 'generate-docs';
 const SKILL_SRC  = join(ROOT_DIR, 'skills', SKILL_NAME);
@@ -91,10 +90,6 @@ export function skillsInstall() {
         cpSync(EXTEND_SKILL_SRC, EXTEND_WINDSURF_DIR, { recursive: true });
         log.ok(`extend-convention skill installed (Claude Code + Windsurf)`);
     }
-
-    log.say('');
-    log.head('patching graphify (repo_filter parameter on MCP tools)');
-    applyGraphifyPatch();
 
     log.say('');
     log.ok('skill installed.');

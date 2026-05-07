@@ -13,10 +13,10 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT_DIR, log, run, runOk, listRegistered, loadConfig, die } from './util.js';
 import { skillsInstall } from './skills.js';
-import { applyPatch as applyGraphifyPatch, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-mcp-enhancements.js';
 import {
     ensureClaudeRules, ensureAgentsRules, writeWindsurfFiles, writeMcpJson,
-    writeGroupManifest, installGitHooks, writeRemergeHelper,
+    writeGroupManifest, installGitHooks,
+    ensureGroupGraphsDir, migrateLegacyArtifacts,
 } from './integrations.js';
 
 // Read the same VERSION as cli.js to keep "gfleet update" output consistent.
@@ -69,7 +69,13 @@ export async function refreshRulesLite() {
         log.say('');
         const cfg = loadConfig(cfgPath);
         log.head(`refreshing rules for: ${cfg.group}`);
-        const helper = writeRemergeHelper(cfg.group, cfg.groupGraph, cfg.repos);
+        // Self-heal: clean up legacy patch / merge-daemon / merged-graph
+        // artifacts on the way through, then ensure the new graphs-dir.
+        const migrated = migrateLegacyArtifacts(cfg.group);
+        if (migrated.removed.length > 0) {
+            log.info(`migrated legacy artifacts: ${migrated.removed.length} item(s) cleaned up`);
+        }
+        ensureGroupGraphsDir(cfg.group, cfg.repos);
         const groupDocs = cfg.docs?.group_docs_path ?? null;
         const hookedGitRoots = new Set();
         for (const r of cfg.repos) {
@@ -84,7 +90,7 @@ export async function refreshRulesLite() {
             writeMcpJson(r.path, cfg.groupGraph, r.slug, cfg.group);
             // Hooks: idempotent block upsert (no rebuilds, no watchers).
             if (!hookedGitRoots.has(gitRoot)) {
-                installGitHooks(gitRoot, cfg.group, helper);
+                installGitHooks(gitRoot, cfg.group, null);
                 hookedGitRoots.add(gitRoot);
             }
             // Manifest (committed) — rewrites siblings list to current state.
@@ -169,18 +175,10 @@ export async function update({ refreshRules = false, refreshRulesLite: liteFlag 
         log.info('no package.json changes — skipping npm install');
     }
 
-    // 4. Skills (re-copy content, re-install workflows, auto-applies graphify patch)
+    // 4. Skills (re-copy content, re-install workflows)
     log.say('');
     log.head('skills');
     skillsInstall();
-
-    // 5. Patch (defensive — skillsInstall already does this, but verify state)
-    log.say('');
-    log.head('graphify patch');
-    const ps = graphifyPatchStatus();
-    if (ps.state === 'patched')        log.ok(`patch applied (${ps.applied}/${ps.total} hunks)`);
-    else if (ps.state === 'partial')   { log.warn(`partial patch — re-applying`); applyGraphifyPatch(); }
-    else if (ps.state === 'unpatched') { log.warn(`unpatched — applying`); applyGraphifyPatch(); }
 
     // 6a. Optional: lightweight rules refresh (no rebuilds, no watcher churn).
     if (liteFlag) {

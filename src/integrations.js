@@ -1,8 +1,15 @@
-// Per-repo integrations: ignores, .mcp.json, Claude/Windsurf, git hooks, remerge helper.
-import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, rmSync, rmdirSync, chmodSync, appendFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+// Per-repo integrations: ignores, .mcp.json, Claude/Windsurf, git hooks.
+//
+// Architecture note (post-fork): the MCP server is gfleet-owned and lives at
+// `<gfleet>/src/mcp-server/server.py`. It loads per-repo graph files from a
+// graphs-dir (one symlink per slug) and, optionally, applies cross-repo edges
+// from `~/.graphify/groups/<group>-links.json` on top. There is no merged
+// graph file and no merge daemon — the upstream `graphify merge-graphs`
+// composer adds zero inter-repo edges, so the merge step was pure ceremony.
+import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, rmSync, rmdirSync, chmodSync, appendFileSync, symlinkSync, lstatSync, readlinkSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, resolve as pathResolve } from 'node:path';
 import {
-    TEMPLATES_DIR, LOCAL_BIN, GROUPS_DIR, IS_WIN,
+    TEMPLATES_DIR, LOCAL_BIN, GROUPS_DIR, FLEET_STATE_DIR, IS_WIN, ROOT_DIR, HOME,
     ensureDir, readJson, writeJson, log, run, runOrThrow, graphifyPython, which,
     getGitDir,
 } from './util.js';
@@ -63,25 +70,104 @@ graphify-out/cache/
     log.info('.gitignore updated (docs/ + graphify-out scratch)');
 }
 
-export function writeMcpJson(repo, groupGraph, repoSlug, group) {
+// Path of the gfleet-owned MCP server script (forked from upstream `serve.py`).
+export function mcpServerPath() {
+    return join(ROOT_DIR, 'src', 'mcp-server', 'server.py');
+}
+
+// Directory of per-repo graph files for a group. The MCP server takes this
+// path; each entry is a symlink (or copy on Windows) to a repo's
+// `graphify-out/graph.json`. Mtime-watched per file by the server.
+//
+// Resolves `GFLEET_STATE_DIR` at call time (not at module load) so tests
+// that toggle the env var per case observe the change without re-importing.
+export function groupGraphsDir(group) {
+    const base = process.env.GFLEET_STATE_DIR ?? FLEET_STATE_DIR;
+    return join(base, 'groups', group, 'graphs');
+}
+
+// Refresh the symlink at <graphs-dir>/<slug>.json so it points at the repo's
+// `graphify-out/graph.json`. Idempotent: replaces an existing symlink whose
+// target diverged. Falls back to copying the file on Windows where
+// non-elevated symlinks fail; the watcher will re-copy on rebuild.
+function refreshGraphSymlink(graphsDir, slug, repoPath) {
+    ensureDir(graphsDir);
+    const linkPath = join(graphsDir, `${slug}.json`);
+    const target = join(repoPath, 'graphify-out', 'graph.json');
+    // Remove an existing entry only if it doesn't already point at `target`.
+    if (existsSync(linkPath) || isSymlink(linkPath)) {
+        let current = null;
+        try { current = readlinkSync(linkPath); } catch {}
+        if (current === target) return; // already correct
+        try { unlinkSync(linkPath); } catch {}
+    }
+    if (IS_WIN) {
+        // Symlinks on Windows require Developer Mode or admin; copy as a
+        // best-effort fallback. The watcher will re-copy on each rebuild.
+        try {
+            if (existsSync(target)) copyFileSync(target, linkPath);
+        } catch (e) { log.warn(`graphs-dir copy failed for ${slug}: ${e.message}`); }
+        return;
+    }
+    try { symlinkSync(target, linkPath); }
+    catch (e) { log.warn(`graphs-dir symlink failed for ${slug}: ${e.message}`); }
+}
+
+function isSymlink(p) {
+    try { return lstatSync(p).isSymbolicLink(); } catch { return false; }
+}
+
+// Ensure <graphs-dir> contains exactly one entry per registered repo. Removes
+// stale symlinks for repos that no longer exist in the config.
+export function ensureGroupGraphsDir(group, repos) {
+    const dir = groupGraphsDir(group);
+    ensureDir(dir);
+    const wanted = new Set(repos.map(r => `${r.slug}.json`));
+    for (const r of repos) refreshGraphSymlink(dir, r.slug, r.path);
+    // Sweep stale entries.
+    try {
+        for (const f of readdirSync(dir)) {
+            if (!f.endsWith('.json')) continue;
+            if (!wanted.has(f)) {
+                try { unlinkSync(join(dir, f)); } catch {}
+            }
+        }
+    } catch {}
+    return dir;
+}
+
+// Build the .mcp.json args for the gfleet-owned server.
+function mcpServerCommandArgs(group, graphsDir) {
+    return [mcpServerPath(), graphsDir, '--group', group];
+}
+
+// Note: `groupGraph` is intentionally retained as a positional parameter for
+// signature compatibility with existing callers (install.js, update.js,
+// onboard.js). It is no longer the MCP target — the server takes graphs-dir.
+export function writeMcpJson(repo, _groupGraph, repoSlug, group) {
     const f = join(repo, '.mcp.json');
     const py = graphifyPython();
+    // Resolve graphs-dir without re-creating symlinks for unrelated repos —
+    // install.js / update.js call ensureGroupGraphsDir(group, cfg.repos) once
+    // up front; here we just reference the path.
+    const graphsDir = groupGraphsDir(group);
+    ensureDir(graphsDir);
     const obj = existsSync(f) ? readJson(f) : { mcpServers: {} };
     obj.mcpServers = obj.mcpServers ?? {};
-    // Group MCP only — repo-local queries use repo_filter="<slug>" (the patched
-    // graphify MCP supports it). Single-MCP keeps tool surface consistent
-    // across IDEs (Claude Code, Windsurf) and avoids duplicate-tool-name
-    // collisions in agents that flatten tool namespaces.
+    // Single MCP entry keyed by group. Tool surface is consistent across IDEs
+    // (Claude Code, Windsurf) and the server walks per-repo graphs in the
+    // graphs-dir, joined by the cross-repo link table when present.
     obj.mcpServers[`graphify-${group}`] = {
         command: py,
-        args: ['-m', 'graphify.serve', groupGraph],
+        args: mcpServerCommandArgs(group, graphsDir),
     };
-    // Remove old single-key 'graphify' entry from previous gfleet versions (cleanup)
+    // Remove old single-key 'graphify' entry from previous gfleet versions
     delete obj.mcpServers.graphify;
-    // Heal pre-existing per-repo entries (current slug + leftover graphify-*
-    // entries from older gfleet versions). The group entry is preserved by
-    // name; everything else under graphify-* that isn't the group is removed
-    // so `gfleet update` self-heals existing installs.
+    // Heal leftover per-repo / per-slug graphify-* entries from older gfleet
+    // versions. The group entry is preserved by name; every other graphify-*
+    // entry is dropped so `gfleet update` self-heals existing installs (this
+    // is also the migration path away from the patched-`graphify.serve`
+    // invocation).
     delete obj.mcpServers[`graphify-${repoSlug}`];
     for (const key of Object.keys(obj.mcpServers)) {
         if (key.startsWith('graphify-') && key !== `graphify-${group}`) {
@@ -89,7 +175,7 @@ export function writeMcpJson(repo, groupGraph, repoSlug, group) {
         }
     }
     writeJson(f, obj);
-    log.info(`.mcp.json: graphify-${group} (group only — use repo_filter to scope)`);
+    log.info(`.mcp.json: graphify-${group} (gfleet server — use repo_filter to scope)`);
 }
 
 export function installClaudeSkill(repo) {
@@ -162,165 +248,18 @@ export function ensureAgentsRules(repo, group, groupGraph, allRepos = [], groupD
     upsertAgentRulesBlock(join(repo, 'AGENTS.md'), group, groupGraph, allRepos, groupDocsPath, repoSlug);
 }
 
-// Long-running merge daemon: polls per-repo graph.json mtimes and runs the
-// one-shot remerge helper when any is newer than the group graph. Debounced
-// via a lock file (5s grace) so a flurry of saves coalesces into one merge.
-//
-// Why this exists: `graphify watch` rebuilds <repo>/graphify-out/graph.json on
-// save, but the merged group graph at ~/.graphify/groups/<group>.json only
-// updated on commits. MCP queries against the group graph were stale until
-// commit. This daemon closes the loop: save -> per-repo rebuild (graphify
-// watch) -> merge (this daemon) -> MCP live-reload (serve.py patch hunks 6-9).
-//
-// Cross-platform: same script logic works on launchd (macOS), systemd-user
-// (Linux), and Scheduled Tasks (Windows, via PS variant).
-export function writeMergeDaemonScript(group, groupGraph, repos) {
-    ensureDir(LOCAL_BIN);
-    const scriptPath = join(LOCAL_BIN, IS_WIN ? `graphify-fleet-merge-daemon-${group}.ps1` : `graphify-fleet-merge-daemon-${group}`);
-    const helperPath = join(LOCAL_BIN, IS_WIN ? `graphify-fleet-merge-${group}.ps1` : `graphify-fleet-merge-${group}`);
-    const lockPath = join(LOCAL_BIN, `.${group}-merge.lock`);
-    const graphs = repos.map(r => join(r.path, 'graphify-out', 'graph.json'));
+// Deprecated stubs preserved only for migration cleanup. The gfleet server
+// loads per-repo graphs directly from a graphs-dir; there is no merged graph
+// file, no remerge helper, and no merge daemon. Keep these as no-op exports
+// so accidental imports from older callers don't crash.
+export function writeMergeDaemonScript() { return null; }
+export function writeRemergeHelper() { return null; }
 
-    if (IS_WIN) {
-        const list = graphs.map(g => `'${g.replace(/'/g, "''")}'`).join(',');
-        const ps = `# auto-generated by gfleet — merge daemon for group '${group}'
-# Polls per-repo graph.json mtimes every 2s; runs the one-shot remerge helper
-# when any per-repo graph is newer than the group graph. 5s debounce via lock.
-$ErrorActionPreference = 'SilentlyContinue'
-$graphs   = @(${list})
-$groupGraph = '${groupGraph}'
-$helper   = '${helperPath}'
-$lockFile = '${lockPath}'
-$lastMerge = [DateTime]::MinValue
-while ($true) {
-    Start-Sleep -Seconds 2
-    $groupMtime = if (Test-Path $groupGraph) { (Get-Item $groupGraph).LastWriteTime } else { [DateTime]::MinValue }
-    $needsMerge = $false
-    foreach ($g in $graphs) {
-        if (Test-Path $g) {
-            $m = (Get-Item $g).LastWriteTime
-            if ($m -gt $groupMtime) { $needsMerge = $true; break }
-        }
-    }
-    if (-not $needsMerge) { continue }
-    if (((Get-Date) - $lastMerge).TotalSeconds -lt 5) { continue }  # debounce
-    Set-Content -Path $lockFile -Value (Get-Date).ToString('o') -ErrorAction SilentlyContinue
-    & powershell -NoProfile -File $helper | Out-Null
-    Remove-Item $lockFile -ErrorAction SilentlyContinue
-    $lastMerge = Get-Date
-}
-`;
-        writeFileSync(scriptPath, ps);
-    } else {
-        const arrayLines = graphs.map(g => `GRAPHS+=("${g.replace(/"/g, '\\"')}")`).join('\n');
-        const sh = `#!/usr/bin/env bash
-# auto-generated by gfleet — merge daemon for group '${group}'
-# Polls per-repo graph.json mtimes every 2s; invokes the one-shot remerge
-# helper when any per-repo graph is newer than the group graph. 5s debounce
-# via lock file so a burst of rebuilds coalesces into one merge.
-set -u
-GROUP_GRAPH="${groupGraph}"
-HELPER="${helperPath}"
-LOCK_FILE="${lockPath}"
-GRAPHS=()
-${arrayLines}
-LAST_MERGE=0
-mtime() {
-    [ -f "$1" ] || { echo 0; return; }
-    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
-}
-while true; do
-    sleep 2
-    GROUP_MT=$(mtime "$GROUP_GRAPH")
-    NEEDS=0
-    for g in "\${GRAPHS[@]}"; do
-        M=$(mtime "$g")
-        if [ "$M" -gt "$GROUP_MT" ]; then NEEDS=1; break; fi
-    done
-    [ "$NEEDS" = "1" ] || continue
-    NOW=$(date +%s)
-    AGE=$((NOW - LAST_MERGE))
-    if [ "$AGE" -lt 5 ]; then continue; fi  # debounce
-    date +%s > "$LOCK_FILE" 2>/dev/null || true
-    if [ -x "$HELPER" ]; then "$HELPER" >/dev/null 2>&1 || true
-    else bash "$HELPER" >/dev/null 2>&1 || true; fi
-    rm -f "$LOCK_FILE" 2>/dev/null || true
-    LAST_MERGE=$(date +%s)
-done
-`;
-        writeFileSync(scriptPath, sh);
-        chmodSync(scriptPath, 0o755);
-    }
-    return scriptPath;
-}
-
-export function writeRemergeHelper(group, groupGraph, repos) {
-    ensureDir(LOCAL_BIN);
-    ensureDir(GROUPS_DIR);
-    const helperPath = join(LOCAL_BIN, IS_WIN ? `graphify-fleet-merge-${group}.ps1` : `graphify-fleet-merge-${group}`);
-    const graphs = repos.map(r => join(r.path, 'graphify-out', 'graph.json'));
-
-    if (IS_WIN) {
-        const list = graphs.map(g => `'${g.replace(/'/g, "''")}'`).join(',');
-        const ps = `# auto-generated by gfleet — re-merge group '${group}'
-$ErrorActionPreference = 'SilentlyContinue'
-$graphs = @(${list})
-# Poll for the graph file(s) to update (or appear) for up to 30s instead of
-# a fixed sleep — fast machines don't wait, slow machines don't truncate.
-$start = Get-Date
-$timeout = New-TimeSpan -Seconds 30
-while ((Get-Date) - $start -lt $timeout) {
-    $present = $graphs | Where-Object { Test-Path $_ }
-    if ($present.Count -gt 0) {
-        $newest = ($present | ForEach-Object { (Get-Item $_).LastWriteTime } | Measure-Object -Maximum).Maximum
-        if ($newest -gt $start) { break }
-    }
-    Start-Sleep -Milliseconds 500
-}
-$existing = $graphs | Where-Object { Test-Path $_ }
-if ($existing.Count -ge 2) {
-    & graphify merge-graphs $existing --out '${groupGraph}' | Out-Null
-} elseif ($existing.Count -eq 1) {
-    Copy-Item $existing[0] '${groupGraph}' -Force
-}
-`;
-        writeFileSync(helperPath, ps);
-    } else {
-        const arrayLines = graphs.map(g => `GRAPHS+=("${g.replace(/"/g, '\\"')}")`).join('\n');
-        const sh = `#!/usr/bin/env bash
-# auto-generated by gfleet — re-merge group '${group}'
-set -e
-GROUP_GRAPH="${groupGraph}"
-GRAPHS=()
-${arrayLines}
-# Poll for graph file mtime to update (or for the file to first appear) up
-# to 30s instead of a fixed sleep.
-START_TS=$(date +%s)
-DEADLINE=$((START_TS + 30))
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-    SAW_NEWER=0
-    for g in "\${GRAPHS[@]}"; do
-        if [ -f "$g" ]; then
-            MTIME=$(stat -c %Y "$g" 2>/dev/null || stat -f %m "$g" 2>/dev/null || echo 0)
-            if [ "$MTIME" -gt "$START_TS" ]; then SAW_NEWER=1; break; fi
-        fi
-    done
-    [ "$SAW_NEWER" = "1" ] && break
-    sleep 0.5
-done
-EXISTING=()
-for g in "\${GRAPHS[@]}"; do [ -f "$g" ] && EXISTING+=("$g"); done
-if [ "\${#EXISTING[@]}" -ge 2 ]; then
-    graphify merge-graphs "\${EXISTING[@]}" --out "$GROUP_GRAPH" >/dev/null 2>&1 || true
-elif [ "\${#EXISTING[@]}" -eq 1 ]; then
-    cp "\${EXISTING[0]}" "$GROUP_GRAPH"
-fi
-`;
-        writeFileSync(helperPath, sh);
-        chmodSync(helperPath, 0o755);
-    }
-    return helperPath;
-}
+// Legacy merge-daemon and remerge-helper bodies were removed when the MCP
+// server moved to a graphs-dir + per-file mtime-reload model. Refer to git
+// history (pre-fork commit) if you need the launchd / systemd / scheduled-
+// task scripts back. The hook helper for post-commit was simplified to a
+// per-repo `graphify update .` (see buildPostCommitHookCommand below).
 
 const HOOK_NAMES = ['post-commit', 'post-checkout', 'post-merge'];
 
@@ -491,23 +430,43 @@ function upsertHookBlock(file, startMarker, endMarker, block) {
     return true;
 }
 
-export function installGitHooks(repo, group, helperPath) {
+// Build the post-commit refresh block: rebuild this repo's graph, then run
+// the cross-repo link pass for the group. Both are sub-second on warm
+// caches; the MCP server's per-file mtime watch picks up the rebuilt graph
+// on the next tool invocation. No daemon required.
+function buildLinksRefreshBlock(group) {
+    const linksBin = join(ROOT_DIR, 'bin', 'links-pass');
+    if (IS_WIN) {
+        return [
+            `# gfleet-start (${group})`,
+            `try { graphify update . | Out-Null } catch {}`,
+            `try { node "${linksBin}" "${group}" 2>$null | Out-Null } catch {}`,
+            `# gfleet-end (${group})`,
+        ].join('\n');
+    }
+    return [
+        `# gfleet-start (${group})`,
+        `( graphify update . >/dev/null 2>&1 || true ; node "${linksBin}" "${group}" >/dev/null 2>&1 || true ) &`,
+        `disown 2>/dev/null || true`,
+        `# gfleet-end (${group})`,
+    ].join('\n');
+}
+
+// `_helperPath` retained as positional for back-compat with old callers; the
+// helper is no longer used (merge daemon was removed) and the post-commit
+// hook now invokes a per-repo `graphify update .` + `links-pass`.
+export function installGitHooks(repo, group, _helperPath) {
     const r = run('graphify', ['hook', 'install'], { cwd: repo });
     const graphifyHookOk = r.code === 0;
     if (!graphifyHookOk) log.warn('graphify hook install failed (continuing — gfleet hook block will not be appended)');
     const gitDir = getGitDir(repo);
     if (!gitDir) { log.warn(`could not resolve .git dir at ${repo}; skipping hook append`); return; }
-    // Pick a real PowerShell at install time on Windows: prefer pwsh (7.x),
-    // fall back to powershell.exe (5.1, present on stock Windows).
-    const winShell = IS_WIN
-        ? (which('pwsh') ? 'pwsh' : (which('powershell') ? 'powershell' : 'powershell'))
-        : null;
     let appended = 0;
+    const refreshStart = `# gfleet-start (${group})`;
+    const refreshEnd = `# gfleet-end (${group})`;
+    const refreshBlock = buildLinksRefreshBlock(group);
     for (const name of HOOK_NAMES) {
         const f = join(gitDir, 'hooks', name);
-        // graphify hook install only writes post-commit / post-checkout. For
-        // post-merge we create a minimal hook file ourselves so the stale
-        // tracker can fire on `git pull` / `git merge`.
         if (!existsSync(f)) {
             if (name === 'post-merge') {
                 writeFileSync(f, '#!/bin/sh\n');
@@ -517,16 +476,12 @@ export function installGitHooks(repo, group, helperPath) {
                 continue;
             }
         }
-        const cur = readFileSync(f, 'utf8');
-        // ---- (1) Group remerge block — append only once per group/hook ----
-        if (!cur.includes(`gfleet-start (${group})`) && name !== 'post-merge') {
-            // post-merge doesn't need the remerge helper (post-commit already
-            // handles rebuild → merge; pulls trigger watcher anyway).
-            const block = IS_WIN
-                ? `\n# gfleet-start (${group})\n${winShell} -NoProfile -File "${helperPath}" 2>$null &\n# gfleet-end (${group})\n`
-                : `\n# gfleet-start (${group})\nnohup "${helperPath}" > /dev/null 2>&1 &\ndisown 2>/dev/null || true\n# gfleet-end (${group})\n`;
-            appendFileSync(f, block);
-            appended++;
+        // ---- (1) Group refresh block — idempotent upsert. post-merge skips
+        // it because graphify's own post-merge hook + watcher already trigger
+        // a per-repo rebuild that the MCP picks up on next call.
+        if (name !== 'post-merge') {
+            const changed = upsertHookBlock(f, refreshStart, refreshEnd, refreshBlock);
+            if (changed) appended++;
         }
         // ---- (2) Stale-tracker block — idempotent upsert ----
         const staleStart = `# gfleet-stale-tracker-start (${group})`;
@@ -535,8 +490,8 @@ export function installGitHooks(repo, group, helperPath) {
         upsertHookBlock(f, staleStart, staleEnd, block);
         chmodSync(f, 0o755);
     }
-    if (appended > 0) log.info('git hooks installed (+ group remerge + stale tracker)');
-    else log.info('git hooks: stale tracker upserted');
+    if (appended > 0) log.info('git hooks installed (+ per-repo refresh + links pass + stale tracker)');
+    else log.info('git hooks: refresh + stale tracker upserted');
 }
 
 export function removeGitHooks(repo, group) {
@@ -618,7 +573,7 @@ const WINDSURF_MCP_PATHS = [
     join(process.env.HOME ?? '', '.codeium', 'windsurf', 'mcp_config.json'),
 ];
 
-export function addWindsurfGlobalMcp(group, groupGraph, repos = []) {
+export function addWindsurfGlobalMcp(group, _groupGraph, repos = []) {
     // Windsurf's mcp_config.json is GLOBAL (loaded by every session). If we
     // register multiple graphify-* servers here, Windsurf can't disambiguate
     // their tool names ("Duplicate tool name: mcp0_get_community"). So in
@@ -628,7 +583,11 @@ export function addWindsurfGlobalMcp(group, groupGraph, repos = []) {
     // .mcp.json which CAN safely host multiple graphify-* servers because
     // only one project's config is loaded per session.
     const py = graphifyPython();
-    const groupServer = { command: py, args: ['-m', 'graphify.serve', groupGraph] };
+    // Forked gfleet MCP server — takes a graphs-dir + group tag, walks
+    // per-repo graphs in memory, overlays cross-repo edges from the link
+    // table. `_groupGraph` is no longer the MCP target.
+    const graphsDir = ensureGroupGraphsDir(group, repos);
+    const groupServer = { command: py, args: [mcpServerPath(), graphsDir, '--group', group] };
     for (const p of WINDSURF_MCP_PATHS) {
         ensureDir(dirname(p));
         const obj = existsSync(p) ? readJson(p) : {};
@@ -665,6 +624,93 @@ export function removeWindsurfGlobalMcp(group) {
 
 const WINDSURF_SKILL_DST = join(process.env.HOME ?? '', '.codeium', 'windsurf', 'skills', 'graphify', 'SKILL.md');
 // (URL declared at top of file from WINDSURF_SKILL_PIN.)
+
+// ---------------------------------------------------------------------------
+// Migration: clean up artifacts from the pre-fork architecture so that an
+// existing user's first `gfleet update` after this lands transitions cleanly.
+// Idempotent — safe to call repeatedly. Returns a summary { removed: [...] }.
+// ---------------------------------------------------------------------------
+export function migrateLegacyArtifacts(group) {
+    const removed = [];
+
+    // 1. patch-state.json (the legacy serve.py patch tracker).
+    const patchState = join(FLEET_STATE_DIR, 'patch-state.json');
+    if (existsSync(patchState)) {
+        try { unlinkSync(patchState); removed.push(patchState); } catch {}
+    }
+
+    // 2. Old launchd plist for the merge daemon (macOS).
+    if (process.platform === 'darwin' && group) {
+        const label = `ai.graphify.fleet.${group}.merge-daemon`;
+        const plist = join(HOME, 'Library', 'LaunchAgents', `${label}.plist`);
+        if (existsSync(plist)) {
+            try { run('launchctl', ['unload', plist]); } catch {}
+            try { unlinkSync(plist); removed.push(plist); } catch {}
+        }
+    }
+
+    // 3. Old systemd-user unit for the merge daemon (Linux).
+    if (process.platform === 'linux' && group) {
+        const label = `ai.graphify.fleet.${group}.merge-daemon`;
+        const unit = join(HOME, '.config', 'systemd', 'user', `${label}.service`);
+        if (existsSync(unit)) {
+            try { run('systemctl', ['--user', 'disable', '--now', `${label}.service`]); } catch {}
+            try { unlinkSync(unit); removed.push(unit); } catch {}
+            try { run('systemctl', ['--user', 'daemon-reload']); } catch {}
+        }
+    }
+
+    // 4. Old Windows scheduled task for the merge daemon.
+    if (process.platform === 'win32' && group) {
+        const label = `ai.graphify.fleet.${group}.merge-daemon`;
+        run('powershell', ['-NoProfile', '-Command',
+            `if (Get-ScheduledTask -TaskName '${label}' -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName '${label}' -Confirm:$false }`]);
+        removed.push(`scheduled-task:${label}`);
+    }
+
+    // 5. Old merge-helper / merge-daemon scripts in ~/.local/bin.
+    if (group) {
+        for (const name of [
+            `graphify-fleet-merge-${group}`,
+            `graphify-fleet-merge-${group}.ps1`,
+            `graphify-fleet-merge-daemon-${group}`,
+            `graphify-fleet-merge-daemon-${group}.ps1`,
+            `.${group}-merge.lock`,
+            `.${group}-merge-needed`,
+        ]) {
+            const p = join(LOCAL_BIN, name);
+            if (existsSync(p)) {
+                try { unlinkSync(p); removed.push(p); } catch {}
+            }
+        }
+    }
+
+    // 6. Old merged group graph file at ~/.graphify/groups/<group>.json.
+    // Replaced by the per-repo graphs-dir; the file is now meaningless.
+    if (group) {
+        const merged = join(GROUPS_DIR, `${group}.json`);
+        if (existsSync(merged)) {
+            try { unlinkSync(merged); removed.push(merged); } catch {}
+        }
+    }
+
+    // 7. Old patched serve.py backup (.gfleet-orig) sitting next to the
+    // graphify install. Best-effort; don't error if we can't locate python.
+    try {
+        const py = graphifyPython();
+        if (py) {
+            const r = run(py, ['-c', 'import graphify.serve, sys; sys.stdout.write(graphify.serve.__file__)']);
+            if (r.code === 0 && r.stdout) {
+                const backup = `${r.stdout.trim()}.gfleet-orig`;
+                if (existsSync(backup)) {
+                    try { unlinkSync(backup); removed.push(backup); } catch {}
+                }
+            }
+        }
+    } catch {}
+
+    return { removed };
+}
 
 export async function ensureWindsurfSkill({ force = false } = {}) {
     // Pass force=true (or set GFLEET_REFRESH_WINDSURF_SKILL=1) to re-fetch.

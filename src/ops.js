@@ -1,8 +1,9 @@
-import { existsSync, rmSync, chmodSync, statSync } from 'node:fs';
+import { existsSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, log, run, readJson, listRegistered, GROUPS_DIR, LOCAL_BIN, IS_WIN } from './util.js';
-import { installWatcher, uninstallWatcher, watcherStatus, installMergeDaemon, uninstallMergeDaemon } from './watchers.js';
-import { writeMergeDaemonScript } from './integrations.js';
+import { loadConfig, log, run, readJson, listRegistered, GROUPS_DIR } from './util.js';
+import { installWatcher, uninstallWatcher, watcherStatus } from './watchers.js';
+import { ensureGroupGraphsDir, groupGraphsDir } from './integrations.js';
+import { runImportLinkPass } from './links.js';
 
 function nodeEdgeCounts(graphPath) {
     if (!existsSync(graphPath)) return null;
@@ -12,27 +13,18 @@ function nodeEdgeCounts(graphPath) {
     } catch { return null; }
 }
 
-function helperPath(group) {
-    return IS_WIN
-        ? join(LOCAL_BIN, `graphify-fleet-merge-${group}.ps1`)
-        : join(LOCAL_BIN, `graphify-fleet-merge-${group}`);
-}
-function runHelper(group) {
-    const p = helperPath(group);
-    if (!existsSync(p)) { log.warn(`remerge helper not found: ${p}`); return; }
-    if (IS_WIN) { run('powershell', ['-NoProfile', '-File', p]); return; }
-    // POSIX: ensure executable; if exec still fails (ENOEXEC, e.g. file
-    // checked out without exec bit on a Windows-share), fall back to bash.
-    try {
-        const st = statSync(p);
-        // owner-execute bit
-        if ((st.mode & 0o100) === 0) chmodSync(p, st.mode | 0o755);
-    } catch {}
-    const r = run(p);
-    if (r.code === -1 || /ENOEXEC|exec format error|Permission denied/i.test(r.stderr ?? '')) {
-        log.warn(`remerge helper not directly executable; retrying via bash`);
-        run('bash', [p]);
+// Aggregate node/edge counts across every per-repo graph in the graphs-dir.
+function aggregateGraphsDir(group) {
+    const dir = groupGraphsDir(group);
+    if (!existsSync(dir)) return { repos: 0, nodes: 0, edges: 0 };
+    let repos = 0, nodes = 0, edges = 0;
+    for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.json')) continue;
+        repos++;
+        const c = nodeEdgeCounts(join(dir, f));
+        if (c) { nodes += c.nodes; edges += c.edges; }
     }
+    return { repos, nodes, edges };
 }
 
 export function list() {
@@ -46,8 +38,8 @@ export function list() {
     log.hr();
     for (const name of names) {
         const cfg = groups[name].config;
-        const counts = nodeEdgeCounts(join(GROUPS_DIR, `${name}.json`));
-        const nodes = counts ? counts.nodes : '-';
+        const agg = aggregateGraphsDir(name);
+        const nodes = agg.repos > 0 ? agg.nodes : '-';
         const mark = existsSync(cfg) ? ' ' : '!';
         console.log(`${name.padEnd(20)} ${String(nodes).padEnd(12)} ${mark}${cfg}`);
     }
@@ -57,10 +49,20 @@ export function list() {
 export function status(configPath) {
     const cfg = loadConfig(configPath);
     log.say(`group: ${cfg.group}`);
-    log.say(`merged graph: ${cfg.groupGraph}`);
-    const c = nodeEdgeCounts(cfg.groupGraph);
-    if (c) log.info(`nodes: ${c.nodes}  edges: ${c.edges}`);
-    else   log.warn('merged graph not found yet');
+    const dir = groupGraphsDir(cfg.group);
+    log.say(`graphs-dir: ${dir}`);
+    const agg = aggregateGraphsDir(cfg.group);
+    if (agg.repos > 0) log.info(`repos: ${agg.repos}  nodes(sum): ${agg.nodes}  edges(sum): ${agg.edges}`);
+    else log.warn('graphs-dir empty (per-repo graphs not built yet)');
+    const linksFile = join(GROUPS_DIR, `${cfg.group}-links.json`);
+    if (existsSync(linksFile)) {
+        try {
+            const obj = readJson(linksFile);
+            log.info(`cross-repo links: ${(obj.links || []).length}`);
+        } catch {}
+    } else {
+        log.info('cross-repo links: (none yet — run rebuild to seed)');
+    }
     log.hr();
     console.log(`${'WATCHER'.padEnd(40)} ${'PID'.padEnd(8)} STATUS`);
     for (const r of cfg.repos) {
@@ -76,7 +78,11 @@ export function rebuild(configPath, target = 'all') {
         log.say(`rebuilding ${r.slug} (${r.path})...`);
         run('graphify', ['update', '.'], { cwd: r.path, env: { ...process.env, GRAPHIFY_FORCE: '1' }, stdio: 'inherit' });
     }
-    runHelper(cfg.group);
+    const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
+    try {
+        const n = runImportLinkPass(cfg.group, dir);
+        log.info(`links: ${n} cross-repo edges`);
+    } catch (e) { log.warn(`links pass failed: ${e.message}`); }
     log.ok('rebuild complete');
 }
 
@@ -89,28 +95,35 @@ export function reset(configPath, target = 'all') {
         log.say(`rebuilding ${r.slug}...`);
         run('graphify', ['update', '.'], { cwd: r.path, stdio: 'inherit' });
     }
-    runHelper(cfg.group);
+    const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
+    try { runImportLinkPass(cfg.group, dir); } catch {}
     log.ok(`reset complete — group '${cfg.group}' regenerated from scratch`);
     log.info('for full LLM extraction (docs, wiki, "why" comments) run /graphify . in Claude Code or Windsurf per repo');
 }
 
+// `remerge` is retained for backward compatibility with existing scripts.
+// Under the gfleet-owned MCP server there is no merged graph file — the
+// server walks per-repo graphs directly. We re-run the cross-repo link
+// pass instead so the command still has a useful effect.
 export function remerge(configPath) {
     const cfg = loadConfig(configPath);
-    runHelper(cfg.group);
-    log.ok(`merged ${cfg.groupGraph}`);
+    log.warn('remerge: deprecated — the MCP server now serves per-repo graphs directly.');
+    log.info('Re-running cross-repo link pass instead.');
+    const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
+    try {
+        const n = runImportLinkPass(cfg.group, dir);
+        log.ok(`links pass: ${n} cross-repo edges`);
+    } catch (e) { log.warn(`links pass failed: ${e.message}`); }
 }
 
 export function start(configPath) {
     const cfg = loadConfig(configPath);
     for (const r of cfg.repos) installWatcher(cfg.group, r.path, r.slug);
-    const daemon = writeMergeDaemonScript(cfg.group, cfg.groupGraph, cfg.repos);
-    installMergeDaemon(cfg.group, daemon);
-    log.ok('watchers loaded (per-repo + merge daemon)');
+    log.ok('watchers loaded');
 }
 export function stop(configPath) {
     const cfg = loadConfig(configPath);
     for (const r of cfg.repos) { uninstallWatcher(cfg.group, r.slug); log.info(`stopped ${r.slug}`); }
-    uninstallMergeDaemon(cfg.group);
     log.ok('watchers stopped');
 }
 export function restart(configPath) { stop(configPath); start(configPath); }
