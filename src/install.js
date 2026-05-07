@@ -6,14 +6,14 @@ import {
 } from './util.js';
 import {
     writeGraphifyignore, updateGitignore, writeMcpJson,
-    installClaudeSkill, writeWindsurfFiles, writeRemergeHelper, installGitHooks,
+    installClaudeSkill, writeWindsurfFiles, writeRemergeHelper, writeMergeDaemonScript, installGitHooks,
     addWindsurfGlobalMcp, ensureWindsurfSkill, removeGitHooks, removeMcpEntry,
     removeWindsurfFiles, removeWindsurfGlobalMcp,
     ensureClaudeRules, ensureAgentsRules,
     installMergeDriver, removeMergeDriver,
     writeGroupManifest, removeGroupManifest,
 } from './integrations.js';
-import { installWatcher, uninstallWatcher } from './watchers.js';
+import { installWatcher, uninstallWatcher, installMergeDaemon, uninstallMergeDaemon } from './watchers.js';
 
 export async function install(configPath) {
     ensureGraphify();
@@ -112,6 +112,14 @@ export async function install(configPath) {
         addWindsurfGlobalMcp(cfg.group, cfg.groupGraph, cfg.repos);
     }
 
+    // Merge daemon: closes the save->query freshness loop. Watcher rebuilds
+    // per-repo graphs; this daemon merges into the group graph; serve.py's
+    // mtime-reload patch picks up the new group graph on the next MCP call.
+    if (cfg.options.watchers) {
+        const daemonScript = writeMergeDaemonScript(cfg.group, cfg.groupGraph, cfg.repos);
+        installMergeDaemon(cfg.group, daemonScript);
+    }
+
     registerGroup(cfg.group, configPath);
     log.say('');
     log.ok(`group '${cfg.group}' installed.`);
@@ -144,8 +152,11 @@ export function uninstall(configPath, opts = {}) {
         log.info('cleaned');
     }
 
+    uninstallMergeDaemon(cfg.group);
     try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-${cfg.group}`), { force: true }); } catch {}
     try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-${cfg.group}.ps1`), { force: true }); } catch {}
+    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-daemon-${cfg.group}`), { force: true }); } catch {}
+    try { rmSync(join(process.env.HOME ?? '', '.local', 'bin', `graphify-fleet-merge-daemon-${cfg.group}.ps1`), { force: true }); } catch {}
     try { rmSync(cfg.groupGraph, { force: true }); } catch {}
     removeWindsurfGlobalMcp(cfg.group);
 

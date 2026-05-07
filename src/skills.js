@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync, cpSync, rmSync, statSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { HOME, ROOT_DIR, ensureDir, log, listRegistered, loadConfig } from './util.js';
-import { applyPatch as applyGraphifyPatch } from './patches/graphify-repo-filter.js';
+import { applyPatch as applyGraphifyPatch } from './patches/graphify-mcp-enhancements.js';
 
 const SKILL_NAME = 'generate-docs';
 const SKILL_SRC  = join(ROOT_DIR, 'skills', SKILL_NAME);

@@ -39,8 +39,13 @@ function getInstalledGraphifyVersion() {
     return r.status === 0 ? r.stdout.trim() : null;
 }
 
-const PATCH_VERSION = 1;
-const MARKER = `# gfleet-patched: graphify-repo-filter v${PATCH_VERSION}`;
+// v2 = adds live-reload-on-mtime hunks (6-9) to keep MCP queries fresh after
+// per-repo or group graph rebuilds without restarting the server.
+const PATCH_VERSION = 2;
+const MARKER = `# gfleet-patched: graphify-mcp-enhancements v${PATCH_VERSION}`;
+// Backward-compat marker still recognized so v1-patched installs are picked up
+// as "partial" and re-applied cleanly on next `gfleet update` / `gfleet patch graphify`.
+const LEGACY_MARKER_V1 = `# gfleet-patched: graphify-repo-filter v1`;
 
 // String replacements to apply, in order. Each must be either already-applied
 // (check matches) or pre-patch (find matches). If neither, fail with diag.
@@ -61,7 +66,9 @@ const PATCHES = [
     if repo_filter:
         G = G.subgraph([n for n, d in G.nodes(data=True) if d.get("repo") == repo_filter]).copy()
     terms = [t.lower() for t in question.split() if len(t) > 2]`,
-        check: `repo_filter: str | None = None,  # ${MARKER}`,
+        // Marker-agnostic check: matches v1 and v2 patched output (the body
+        // `if repo_filter: G = G.subgraph...` is stable across versions).
+        check: `if repo_filter:\n        G = G.subgraph([n for n, d in G.nodes(data=True) if d.get("repo") == repo_filter]).copy()`,
     },
 
     // -----------------------------------------------------------
@@ -89,7 +96,8 @@ const PATCHES = [
                         },
                     },
                     "required": ["question"],`,
-        check: `"repo_filter": {  # ${MARKER}`,
+        // Marker-agnostic: this exact description string is stable across versions.
+        check: `"description": "Optional. Restrict traversal to nodes from this repo (matches the 'repo' field on each node). Use in cross-repo merged graphs to scope queries to one repo.",`,
     },
 
     // -----------------------------------------------------------
@@ -119,7 +127,8 @@ const PATCHES = [
             context_filters=context_filter,
             repo_filter=repo_filter,
         )`,
-        check: `repo_filter = arguments.get("repo_filter")  # ${MARKER}`,
+        // Marker-agnostic: forwarding the kwarg to _query_graph_text is stable.
+        check: `repo_filter = arguments.get("repo_filter")`,
     },
 
     // -----------------------------------------------------------
@@ -152,7 +161,8 @@ const PATCHES = [
             ),
             types.Tool(
                 name="get_community",`,
-        check: `"description": "Optional. Restrict to neighbors from this repo. ${MARKER}"`,
+        // Marker-agnostic: stable prefix shared by v1/v2 outputs.
+        check: `"description": "Optional. Restrict to neighbors from this repo.`,
     },
 
     // -----------------------------------------------------------
@@ -173,7 +183,106 @@ const PATCHES = [
                         "repo_filter": {"type": "string", "description": "Optional. Restrict path search to a single repo. ${MARKER}"},
                     },
                     "required": ["source", "target"],`,
-        check: `"description": "Optional. Restrict path search to a single repo. ${MARKER}"`,
+        // Marker-agnostic: stable prefix shared by v1/v2 outputs.
+        check: `"description": "Optional. Restrict path search to a single repo.`,
+    },
+
+    // -----------------------------------------------------------
+    // 6. Capture initial graph mtime + helper for live reload
+    //    Inserted right after the initial G = _load_graph(...) line.
+    // -----------------------------------------------------------
+    {
+        name: 'live-reload: capture initial mtime + reloader',
+        find:
+`    G = _load_graph(graph_path)
+    communities = _communities_from_graph(G)`,
+        replace:
+`    G = _load_graph(graph_path)
+    communities = _communities_from_graph(G)
+    # ${MARKER}
+    # Live-reload: re-read graph.json when its mtime advances. Stat is sub-ms;
+    # full reload only fires when the file actually changed (post-commit hook,
+    # watcher rebuild, or watcher-triggered group merge). Single-threaded
+    # enough that no mutex is required.
+    import os as _gfleet_os
+    try:
+        _graph_mtime = _gfleet_os.stat(graph_path).st_mtime
+    except OSError:
+        _graph_mtime = 0.0
+
+    def _gfleet_reload_if_stale() -> None:
+        nonlocal G, communities, _graph_mtime
+        try:
+            current = _gfleet_os.stat(graph_path).st_mtime
+        except OSError:
+            return
+        if current > _graph_mtime:
+            try:
+                G = _load_graph(graph_path)
+                communities = _communities_from_graph(G)
+                _graph_mtime = current
+            except SystemExit:
+                # _load_graph calls sys.exit on bad JSON — swallow so the
+                # MCP server keeps serving the previously loaded graph.
+                pass`,
+        check: `def _gfleet_reload_if_stale() -> None:`,
+    },
+
+    // -----------------------------------------------------------
+    // 7. Reload-before-call hook in _tool_query_graph
+    // -----------------------------------------------------------
+    {
+        name: 'live-reload: query_graph reload check',
+        find:
+`    def _tool_query_graph(arguments: dict) -> str:
+        question = arguments["question"]`,
+        replace:
+`    def _tool_query_graph(arguments: dict) -> str:
+        _gfleet_reload_if_stale()  # ${MARKER}
+        question = arguments["question"]`,
+        check: `_gfleet_reload_if_stale()  # ${MARKER}`,
+    },
+
+    // -----------------------------------------------------------
+    // 8. Reload-before-call hook in _tool_get_node + _tool_get_neighbors
+    // -----------------------------------------------------------
+    {
+        name: 'live-reload: get_node reload check',
+        find:
+`    def _tool_get_node(arguments: dict) -> str:
+        label = arguments["label"].lower()`,
+        replace:
+`    def _tool_get_node(arguments: dict) -> str:
+        _gfleet_reload_if_stale()
+        label = arguments["label"].lower()`,
+        check: `def _tool_get_node(arguments: dict) -> str:\n        _gfleet_reload_if_stale()`,
+    },
+
+    {
+        name: 'live-reload: get_neighbors reload check',
+        find:
+`    def _tool_get_neighbors(arguments: dict) -> str:
+        label = arguments["label"].lower()`,
+        replace:
+`    def _tool_get_neighbors(arguments: dict) -> str:
+        _gfleet_reload_if_stale()
+        label = arguments["label"].lower()`,
+        check: `def _tool_get_neighbors(arguments: dict) -> str:\n        _gfleet_reload_if_stale()`,
+    },
+
+    // -----------------------------------------------------------
+    // 9. Reload-before-call hook in _tool_shortest_path
+    // -----------------------------------------------------------
+    {
+        name: 'live-reload: shortest_path reload check',
+        find:
+`    def _tool_shortest_path(arguments: dict) -> str:
+        src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])`,
+        replace:
+`    def _tool_shortest_path(arguments: dict) -> str:
+        _gfleet_reload_if_stale()
+        src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])`,
+        check: `def _tool_shortest_path(arguments: dict) -> str:\n        _gfleet_reload_if_stale()`,
     },
 ];
 
@@ -203,7 +312,7 @@ export function applyPatch({ verbose = true } = {}) {
         return false;
     }
     if (status.state === 'patched') {
-        if (verbose) log.ok(`graphify already patched (repo-filter v${PATCH_VERSION})`);
+        if (verbose) log.ok(`graphify already patched (mcp-enhancements v${PATCH_VERSION}: repo_filter + live-reload)`);
         return true;
     }
 
@@ -265,7 +374,7 @@ export function applyPatch({ verbose = true } = {}) {
     writeFileSync(status.path, src);
     const after = checkPatchStatus();
     if (after.state === 'patched') {
-        if (verbose) log.ok(`graphify patched (repo_filter parameter on query_graph, get_neighbors, shortest_path)`);
+        if (verbose) log.ok(`graphify patched (repo_filter parameter + live-reload-on-mtime for save→query freshness)`);
         return true;
     } else {
         log.warn(`partial patch applied: ${after.applied}/${after.total} hunks. Some hunks didn't match — graphify upstream may have changed.`);

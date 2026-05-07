@@ -13,7 +13,7 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT_DIR, log, run, runOk, listRegistered, loadConfig, die } from './util.js';
 import { skillsInstall } from './skills.js';
-import { applyPatch as applyGraphifyPatch, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
+import { applyPatch as applyGraphifyPatch, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-mcp-enhancements.js';
 import {
     ensureClaudeRules, ensureAgentsRules, writeWindsurfFiles, writeMcpJson,
     writeGroupManifest, installGitHooks, writeRemergeHelper,

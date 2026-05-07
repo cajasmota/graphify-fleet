@@ -52,13 +52,14 @@ test('updateGitignore: preserves user content', () => {
 
 // --- writeMcpJson / removeMcpEntry ---
 
-test('writeMcpJson: fresh creates file with both servers', () => {
+test('writeMcpJson: fresh creates file with group server only (no per-repo)', () => {
     const repo = mkTmp();
     try {
         writeMcpJson(repo, '/tmp/group.json', 'my-repo', 'my-group');
         const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
-        assert.ok(obj.mcpServers['graphify-my-repo']);
+        // Group MCP only — repo-local queries use repo_filter against it.
         assert.ok(obj.mcpServers['graphify-my-group']);
+        assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
     } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
@@ -71,8 +72,28 @@ test('writeMcpJson: preserves non-graphify entries', () => {
         writeMcpJson(repo, '/tmp/g.json', 'r', 'g');
         const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
         assert.ok(obj.mcpServers.other);
-        assert.ok(obj.mcpServers['graphify-r']);
         assert.ok(obj.mcpServers['graphify-g']);
+        // No per-repo entry written under the new single-MCP model.
+        assert.equal(obj.mcpServers['graphify-r'], undefined);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('writeMcpJson: heals leftover per-repo + stale graphify-* entries from older gfleet versions', () => {
+    const repo = mkTmp();
+    try {
+        writeFileSync(join(repo, '.mcp.json'), JSON.stringify({
+            mcpServers: {
+                'graphify-my-repo':       { command: 'old', args: [] },
+                'graphify-old-other-repo': { command: 'old', args: [] },
+                other:                    { command: 'foo', args: [] },
+            },
+        }));
+        writeMcpJson(repo, '/tmp/g.json', 'my-repo', 'my-group');
+        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+        assert.ok(obj.mcpServers['graphify-my-group']);
+        assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
+        assert.equal(obj.mcpServers['graphify-old-other-repo'], undefined);
+        assert.ok(obj.mcpServers.other);  // non-graphify entries are preserved
     } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 

@@ -37,7 +37,7 @@ The wizard discovers your repos, auto-detects each stack, writes `~/configs/<gro
 - **Per-repo file watchers** — launchd (macOS) / systemd-user (Linux) / Scheduled Tasks (Windows). Graphs rebuild on save.
 - **Git hooks** — `post-commit` rebuilds graphs; `post-commit / post-merge / post-checkout` mark stale doc sections in `docs/.stale.md` so your agent surfaces them when you ask about affected code.
 - **Merge driver** — `graph.json` union-merges across parallel commits. No more conflict markers.
-- **MCP registration** — per-repo `.mcp.json` for Claude Code (one entry per repo + one for the merged group); single group MCP for Windsurf.
+- **MCP registration** — single group MCP per project. Both Claude Code (per-project `.mcp.json`) and Windsurf (global `mcp_config.json`) register one `graphify-<group>` server. Repo-local queries use `repo_filter="<repo-slug>"` against the group MCP.
 - **Graphify patch** — adds a `repo_filter` parameter to graphify's `query_graph` / `get_neighbors` / `shortest_path` MCP tools so a single MCP server scopes per-repo. Re-applies itself on every `gfleet update` / `ensureGraphify`.
 - **`/generate-docs` skill** — installed globally for both Claude Code and Windsurf.
 - **Agent rules** — marker-wrapped, idempotent CLAUDE.md / Windsurf rules so AI assistants know about `repo_filter`, staleness, and `save-result`.

@@ -1,7 +1,8 @@
 import { existsSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, log, run, readJson, listRegistered, GROUPS_DIR, LOCAL_BIN, IS_WIN } from './util.js';
-import { installWatcher, uninstallWatcher, watcherStatus } from './watchers.js';
+import { installWatcher, uninstallWatcher, watcherStatus, installMergeDaemon, uninstallMergeDaemon } from './watchers.js';
+import { writeMergeDaemonScript } from './integrations.js';
 
 function nodeEdgeCounts(graphPath) {
     if (!existsSync(graphPath)) return null;
@@ -102,11 +103,14 @@ export function remerge(configPath) {
 export function start(configPath) {
     const cfg = loadConfig(configPath);
     for (const r of cfg.repos) installWatcher(cfg.group, r.path, r.slug);
-    log.ok('watchers loaded');
+    const daemon = writeMergeDaemonScript(cfg.group, cfg.groupGraph, cfg.repos);
+    installMergeDaemon(cfg.group, daemon);
+    log.ok('watchers loaded (per-repo + merge daemon)');
 }
 export function stop(configPath) {
     const cfg = loadConfig(configPath);
     for (const r of cfg.repos) { uninstallWatcher(cfg.group, r.slug); log.info(`stopped ${r.slug}`); }
+    uninstallMergeDaemon(cfg.group);
     log.ok('watchers stopped');
 }
 export function restart(configPath) { stop(configPath); start(configPath); }

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, renameSyn
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyPatch as applyGraphifyPatch } from './patches/graphify-repo-filter.js';
+import { applyPatch as applyGraphifyPatch } from './patches/graphify-mcp-enhancements.js';
 
 export const HOME = homedir();
 export const PLATFORM = platform();

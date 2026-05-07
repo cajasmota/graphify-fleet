@@ -9,15 +9,15 @@ Group repos:
 
 The group MCP server `graphify-{{group}}` is available. The merged group graph contains nodes from every repo in the group; each node carries a `repo` field.
 
-**Use `repo_filter` to scope queries to one repo** (this is the default for repo-local questions). The MCP tools `query_graph`, `get_neighbors`, `shortest_path` all accept a `repo_filter` argument:
+**Use `repo_filter` to scope queries to one repo or module** (this is the default for repo-local questions). The MCP tools `query_graph`, `get_neighbors`, `shortest_path` all accept a `repo_filter` argument. In monorepos, each registered module has its own slug — passing `repo_filter="<module-slug>"` scopes the traversal to that module's nodes only.
 
 ```
-# repo-local query (default — when you're working in this repo)
+# repo-local (or module-local) query — default when working in this repo
 graphify-{{group}}.query_graph(question="how is X handled?", repo_filter="{{repo_slug}}")
 
 # cross-repo query (only when the question explicitly crosses repos)
 graphify-{{group}}.query_graph(question="how does the frontend call the backend's create endpoint?")
-# omit repo_filter — returns nodes from all repos
+# omit repo_filter — returns nodes from all repos / modules
 ```
 
 **Default rule**: when working in this repo, pass `repo_filter="{{repo_slug}}"` unless the question is explicitly cross-repo. This avoids cross-repo noise while keeping a single MCP surface.
@@ -29,10 +29,6 @@ graphify-{{group}}.query_graph(question="how does the frontend call the backend'
 {{repos_table}}
 
 When uncertain which slug applies, the **current repo's slug is `{{repo_slug}}`**.
-
-### Claude Code only — dual-MCP shortcut (optional)
-
-In Claude Code (per-project `.mcp.json`), there's also a `graphify-{{repo_slug}}` server registered for convenience. Calling it is equivalent to passing `repo_filter="{{repo_slug}}"` to the group MCP. **Prefer the single-MCP `repo_filter` approach** — it's portable across IDEs and uses one tool surface. The per-repo MCP exists for backward compatibility.
 
 ### Other ways to navigate
 

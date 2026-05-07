@@ -1,4 +1,4 @@
-// Tests for src/patches/graphify-repo-filter.js
+// Tests for src/patches/graphify-mcp-enhancements.js
 //
 // Constraint: tests must NOT mutate the user's real graphify install. Most
 // tests therefore exercise the patch logic against a synthesized serve.py
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { checkPatchStatus, revertPatch } from '../src/patches/graphify-repo-filter.js';
+import { checkPatchStatus, revertPatch } from '../src/patches/graphify-mcp-enhancements.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,7 +38,7 @@ test('fake serve.py: applying patch twice (manually) is idempotent', () => {
 
         // Apply the marker once via simple string replacement: prepend a
         // signature comment that the real applyPatch would add.
-        const MARKER = 'gfleet-patched: graphify-repo-filter v1';
+        const MARKER = 'gfleet-patched: graphify-mcp-enhancements v2';
         const patched = stub.replace(
             'context_filters: list[str] | None = None,',
             `context_filters: list[str] | None = None,\n    repo_filter: str | None = None,  # ${MARKER}`,
@@ -57,7 +57,7 @@ test('fake serve.py: applying patch twice (manually) is idempotent', () => {
         );
         assert.equal(onceContent, twiceContent);
         // Only one occurrence of the marker
-        const occurrences = (twiceContent.match(/gfleet-patched: graphify-repo-filter/g) || []).length;
+        const occurrences = (twiceContent.match(/gfleet-patched: graphify-mcp-enhancements/g) || []).length;
         assert.equal(occurrences, 1);
     } finally { rmSync(dir, { recursive: true, force: true }); }
 });

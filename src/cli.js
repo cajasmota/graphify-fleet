@@ -12,7 +12,7 @@ import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
 import { docsInit, docsStatus, docsRun, docsPath, marksStale, docsSilence, docsUnsilence, docsClearStale } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
-import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
+import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-mcp-enhancements.js';
 import { onboard } from './onboard.js';
 import { update } from './update.js';
 import { conventionsList, conventionsAdd, conventionsRemove } from './conventions.js';
