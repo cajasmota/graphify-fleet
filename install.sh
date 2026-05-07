@@ -79,10 +79,13 @@ fi
 if command -v node >/dev/null 2>&1; then
     NODE_VER="$(node -v 2>/dev/null | sed 's/^v//' | head -1)"
     NODE_MAJOR="${NODE_VER%%.*}"
-    if [ "$NODE_MAJOR" -ge 18 ]; then
+    if [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]] && [ "$NODE_MAJOR" -ge 18 ]; then
         ok "node: v$NODE_VER"
-    else
+    elif [[ "$NODE_MAJOR" =~ ^[0-9]+$ ]]; then
         warn "node v$NODE_VER is too old; gfleet needs Node 18.19+"
+        need_install_node=1
+    else
+        warn "node found but version unclear (got: '$NODE_VER'); will install"
         need_install_node=1
     fi
 else

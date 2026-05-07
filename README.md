@@ -4,63 +4,49 @@ Orchestrate [graphify](https://github.com/safishamsi/graphify) across **multiple
 
 Built for codebases that span more than one repo — backend + frontend + mobile + infra, or microservice fleets, or monorepos with selectable modules.
 
+## Quick path (install → docs in ~5 minutes)
+
+```bash
+# 1. Install (mac/linux)
+curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.sh | bash
+
+# 2. Set up your repos (interactive)
+gfleet wizard
+
+# 3. Open one of your repos in Claude Code or Windsurf and run:
+/generate-docs
+```
+
+Windows: replace step 1 with `irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1 | iex`.
+
 ---
 
 ## Table of contents
 
-1. [What gfleet does](#what-gfleet-does)
-2. [Requirements](#requirements)
-3. [Install](#install)
-4. [Quick start (single dev)](#quick-start-single-dev)
-5. [Quick start (teammate joining an existing project)](#quick-start-teammate-joining-an-existing-project)
-6. [Concepts](#concepts)
-7. [Commands reference](#commands-reference)
-   - [Setup](#setup)
-   - [Inspect](#inspect)
-   - [Build / rebuild graphs](#build--rebuild-graphs)
-   - [Watchers](#watchers)
-   - [Skills (generate-docs)](#skills-generate-docs)
-   - [Docs](#docs)
-   - [Monorepo](#monorepo)
-   - [Patch (graphify local patch)](#patch-graphify-local-patch)
-8. [Config schema](#config-schema)
-9. [The `.gfleet/group.json` manifest (committed)](#the-gfleetgroupjson-manifest-committed)
-10. [Multi-dev workflow](#multi-dev-workflow)
-11. [Generated docs (the `generate-docs` skill)](#generated-docs-the-generate-docs-skill)
-12. [Troubleshooting](#troubleshooting)
-
----
-
-## What gfleet does
-
-Per repo in a group, gfleet sets up:
-
-- **AST graph** via `graphify update` (free, no API key)
-- **Watchers** that rebuild the graph on file save (launchd / systemd-user / Scheduled Tasks)
-- **Git hooks** that rebuild on commit and re-merge the group graph
-- **Merge driver** for `graph.json` so concurrent commits don't produce conflict markers
-- **MCP servers** (per-repo + group) so Claude Code, Windsurf, and other agents can query
-- **Agent rules** in `CLAUDE.md` / `AGENTS.md` / `.windsurfrules` explaining how to use the graph and the `repo_filter` parameter
-- **`generate-docs` skill** for `/generate-docs` slash commands in Claude Code and Windsurf
-- **VitePress site config** so docs are browsable like Confluence (search, sidebar, dark mode)
-- **Portable `.gfleet/group.json` manifest** committed per repo so teammates can run `gfleet onboard` after `git clone`
-
-Per group, gfleet maintains:
-
-- **Merged group graph** at `~/.graphify/groups/<group>.json` (cross-repo BFS/DFS via MCP)
-- **Group memory** at `~/.graphify/groups/<group>-memory/` for `save-result` findings (closed-loop knowledge feedback)
-- **Group docs path** for cross-repo narrative documentation
+1. [Requirements](#requirements)
+2. [Install](#install)
+3. [Quick start (single dev)](#quick-start-single-dev)
+4. [Quick start (teammate joining)](#quick-start-teammate-joining)
+5. [Concepts](#concepts)
+6. [Commands reference](#commands-reference)
+7. [Config schema](#config-schema)
+8. [The `.gfleet/group.json` manifest](#the-gfleetgroupjson-manifest)
+9. [Multi-dev workflow](#multi-dev-workflow)
+10. [Generated docs](#generated-docs)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Requirements
 
-- **Node 18.19+** (the gfleet CLI is Node)
-- **Python 3.10+** (graphify itself is Python)
-- **[uv](https://docs.astral.sh/uv/)** (used to install graphify in an isolated venv)
-- **git**
+| Tool | Version |
+|------|---------|
+| Node | 18.19+ (gfleet CLI) |
+| Python | 3.10+ (graphify) |
+| [uv](https://docs.astral.sh/uv/) | latest (installs graphify in an isolated venv) |
+| git | any |
 
-`gfleet doctor` checks all of these and reports the patch + version status.
+`gfleet doctor` checks all of these and reports patch + version status.
 
 ---
 
@@ -78,17 +64,9 @@ curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/insta
 irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1 | iex
 ```
 
-The installer:
-1. Verifies prerequisites (git, Node 18.19+, uv, Python 3.10+) — installs missing ones (Node via fnm on macOS/Linux or winget on Windows; uv via the official Astral installer)
-2. Clones graphify-fleet to `~/.graphify-fleet`
-3. Runs `npm install`
-4. Creates a `gfleet` shim on PATH (`~/.local/bin/gfleet` or `gfleet.cmd` on Windows)
-5. Runs `gfleet doctor` to verify
-6. Prints next steps
+The installer verifies prerequisites (installing missing ones via fnm / winget / Astral), clones to `~/.graphify-fleet`, runs `npm install`, places a `gfleet` shim on PATH (`~/.local/bin/gfleet` or `gfleet.cmd`), and runs `gfleet doctor`. Re-run anytime to update — idempotent.
 
-Re-run the same command later to update — it's idempotent.
-
-### Manual install (if you prefer)
+### Manual install
 
 ```bash
 git clone https://github.com/cajasmota/graphify-fleet.git ~/.graphify-fleet
@@ -102,57 +80,33 @@ gfleet doctor
 ### Custom install location
 
 ```bash
-# bash
 curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.sh | bash -s -- --dir ~/tools/gfleet --branch dev
 ```
-
-`gfleet doctor` will tell you if anything's missing (uv, Python, the graphify install, the local patch) and offer a remediation hint.
 
 ---
 
 ## Quick start (single dev)
 
-You have a few related repos and want to set up gfleet for the first time:
-
 ```bash
 gfleet wizard
 ```
 
-The wizard:
+The wizard asks for a group name, discovers or accepts repo paths (drag-drop from Finder works), auto-detects each repo's stack, lets you toggle features, writes `~/configs/<group>.fleet.json`, and runs the full install (graphs, watchers, hooks, MCP, agent rules, optional skill).
 
-1. Asks for a **group name** (e.g. `myapp`).
-2. Discovers repos under a parent folder OR accepts manual paths (comma-separated supported, drag-drop from Finder works).
-3. For each repo, auto-detects the **stack** (`react-native` / `node` / `python` / `go` / `generic`) and lets you override.
-4. Lets you toggle features (file watchers, Windsurf integration, Claude Code integration, documentation generation).
-5. Saves a fleet config at `~/configs/<group>.fleet.json`.
-6. Runs the full install (initial AST graphs, watchers, hooks, MCP wiring, agent rules, optional skill install).
-
-After the wizard:
-
-- Watchers are running. Each repo's graph rebuilds on save and on commit.
-- You can open any repo in Claude Code or Windsurf and the graph is queryable via `graphify-<group>` MCP.
-- If you enabled documentation generation, run `/generate-docs` in Claude Code or Windsurf to generate per-repo and (with `--all`) group-level docs.
+After it finishes: watchers run on save and on commit, the graph is queryable in Claude Code / Windsurf via `graphify-<group>` MCP, and `/generate-docs` works in your IDE if you enabled docs.
 
 ---
 
-## Quick start (teammate joining an existing project)
+## Quick start (teammate joining)
 
-A teammate set things up. You just `git clone`'d one of the repos. The repo has a `.gfleet/group.json` committed.
+A teammate set things up; you cloned a repo with `.gfleet/group.json` committed.
 
 ```bash
 cd ~/code/myapp-backend     # whichever repo you cloned
 gfleet onboard
 ```
 
-`gfleet onboard`:
-
-1. Reads `.gfleet/group.json` — knows the group, your repo's slug, and what siblings exist.
-2. Prompts for the local path to each sibling repo (defaults to a sensible parent folder; offers to `git clone` if a `clone_url` is set in the manifest).
-3. Generates a local fleet config at `~/.gfleet/<group>.fleet.json` with your absolute paths.
-4. Runs `gfleet install` (registers merge driver locally, builds graphs, wires MCP, starts watchers).
-5. Installs the `generate-docs` skill globally.
-
-After that you have the same setup as the original dev — just with paths matching your machine.
+`gfleet onboard` reads the manifest, prompts for sibling-repo paths (or `git clone`s them if `clone_url` is set), writes `~/.gfleet/<group>.fleet.json`, and runs `gfleet install` — registering the merge driver locally, building graphs, wiring MCP, starting watchers, and installing the `generate-docs` skill globally.
 
 ---
 
@@ -160,60 +114,48 @@ After that you have the same setup as the original dev — just with paths match
 
 ### Group
 
-A set of related repos that share a merged graph. Each repo belongs to exactly one group. Groups isolate from each other — querying group A's graph never returns nodes from group B.
+A set of related repos sharing a merged graph. Each repo belongs to one group; groups are isolated.
 
 ### Repo vs monorepo module
 
-A "repo" entry in the fleet config can be either:
-- A **standalone repo** — own `.git`, indexed as one unit.
-- A **monorepo** with selected modules — each picked module is treated as a virtual repo (own graph, own watcher, own MCP entry). Monorepo modules share the parent repo's `.git` (one merge-driver registration, one set of git hooks).
-
-See [Monorepo](#monorepo) for the schema and CLI.
+A "repo" entry is either a **standalone repo** (own `.git`) or a **monorepo** with selected `modules` — each module is a virtual repo (own graph, watcher, MCP entry) sharing the parent's `.git` (one merge-driver registration, one set of hooks). See [Monorepo commands](#monorepo).
 
 ### Per-repo MCP + group MCP
 
-Two MCP servers are registered (in Claude Code's per-project `.mcp.json`):
+Two MCP servers are registered in Claude Code's per-project `.mcp.json`:
 
-- `graphify-<repo-slug>` — serves only this repo's graph. No cross-repo noise.
-- `graphify-<group>` — serves the merged group graph. Use for cross-repo flows.
+- `graphify-<repo-slug>` — only this repo's graph.
+- `graphify-<group>` — the merged group graph.
 
-In Windsurf (global MCP config), only the **group MCP** is registered to avoid tool-name collisions across multiple servers. Repo-local filtering in Windsurf is done via the `repo_filter` parameter (see next).
+Windsurf (global config) gets only the **group MCP** to avoid tool-name collisions; repo-local filtering uses the `repo_filter` parameter.
 
-### `repo_filter` parameter (gfleet's local graphify patch)
+### `repo_filter` parameter (graphify patch)
 
-graphify's MCP tools (`query_graph`, `get_neighbors`, `shortest_path`) don't natively accept a `repo_filter`. gfleet ships a small idempotent patch (`gfleet patch graphify`) that adds it. With the patch:
+graphify's MCP tools don't natively accept `repo_filter`. gfleet ships an idempotent patch (`gfleet patch graphify`) that adds it:
 
 ```
 graphify-<group>.query_graph(question, repo_filter="<repo-slug>")
 ```
 
-restricts the BFS/DFS traversal to that repo's nodes. Lets one MCP serve both repo-local and cross-repo queries.
-
-The patch is auto-applied during `gfleet skills install` and reverted by `gfleet patch revert`. `gfleet doctor` warns if graphify was upgraded and the patch is lost.
+Restricts BFS/DFS to that repo's nodes, so one MCP serves both repo-local and cross-repo queries. Auto-applied during `gfleet skills install`; reverted by `gfleet patch revert`. `gfleet doctor` warns if a graphify upgrade lost the patch.
 
 ### Closed-loop knowledge via `save-result`
 
-When an agent traces a non-trivial fact (cross-repo HTTP boundary, emergent behavior, complex query), it should call `graphify save-result` to persist the finding. The MCP server reads memory alongside the graph, so saved findings surface in future queries at zero re-compute cost.
-
-gfleet's agent rules instruct the agent to **dual-save** — to both `<repo>/graphify-out/memory/` and `~/.graphify/groups/<group>-memory/` — so findings are visible from both per-repo and group MCPs.
+Agents call `graphify save-result` to persist non-trivial findings (cross-repo HTTP boundaries, emergent behavior, complex queries). gfleet's agent rules **dual-save** to `<repo>/graphify-out/memory/` and `~/.graphify/groups/<group>-memory/` so findings show up in both per-repo and group MCPs.
 
 ### Merge driver (multi-dev safety)
 
-Two devs commit graph rebuilds in parallel → without a merge driver, `graph.json` ends up with conflict markers. With it (gfleet sets it up in `.git/config` + `.gitattributes`), git auto-unions the two graphs.
-
-The `.gitattributes` entry is committed; the `.git/config` entry is per-clone. Teammates run `gfleet onboard` to register it locally.
+gfleet registers a git merge driver in `.git/config` and `.gitattributes` so concurrent `graph.json` commits union-merge instead of producing conflict markers. `.gitattributes` is committed; `.git/config` is per-clone (teammates run `gfleet onboard`). See [Multi-dev workflow](#multi-dev-workflow).
 
 ### Generate-docs skill
 
-Optional but recommended. Adds a `/generate-docs` slash command to Claude Code and Windsurf that produces module-organized markdown docs (architecture, API reference, cross-cutting concerns), VitePress config, and dual-saved findings into the graph memory.
-
-See [Generated docs](#generated-docs-the-generate-docs-skill).
+Adds `/generate-docs` to Claude Code and Windsurf — module-organized markdown, VitePress site, dual-saved findings. See [Generated docs](#generated-docs).
 
 ---
 
 ## Commands reference
 
-Bare invocation (`gfleet`) lists registered groups (or shows help if none registered).
+Bare invocation (`gfleet`) lists registered groups (or shows help if none).
 
 ### Setup
 
@@ -223,25 +165,25 @@ Bare invocation (`gfleet`) lists registered groups (or shows help if none regist
 | `gfleet onboard [path]` | Bootstrap a teammate after `git clone`. Reads `.gfleet/group.json`, prompts for sibling paths, runs install. |
 | `gfleet doctor` | Verify prerequisites (Node, uv, Python, graphify version, patch state, extras). |
 | `gfleet install <config.json>` | Install (or re-apply) for a single fleet config. Idempotent. |
-| `gfleet uninstall [group\|config] [--purge]` | Remove watchers, hooks, MCP entries, agent rules block, manifest. `--purge` also deletes per-repo `graphify-out/`. |
+| `gfleet uninstall [group\|config] [--purge]` | Remove watchers, hooks, MCP entries, agent rules, manifest. `--purge` also deletes per-repo `graphify-out/`. |
 
 ### Inspect
 
 | Command | What it does |
 |---------|--------------|
 | `gfleet list` (or `gfleet ls`) | List all registered groups + node counts. |
-| `gfleet status [group]` | Watcher state + graph stats for one group, or all if no arg. |
+| `gfleet status [group]` | Watcher state + graph stats. |
 | `gfleet help` | This message. |
 
 ### Build / rebuild graphs
 
-All of these accept either a group name (preferred) or a config path; no arg runs across all registered groups.
+Accept a group name (preferred) or a config path; no arg runs across all registered groups.
 
 | Command | What it does |
 |---------|--------------|
 | `gfleet rebuild [group] [slug]` | Force AST rebuild (use after deletions). One repo if `slug` given. |
 | `gfleet reset [group] [slug]` | Wipe `graphify-out/` and rebuild from scratch. |
-| `gfleet remerge [group]` | Re-run merge-graphs over the group's per-repo graphs (no rebuild). |
+| `gfleet remerge [group]` | Re-run merge-graphs over per-repo graphs (no rebuild). |
 
 ### Watchers
 
@@ -255,7 +197,7 @@ All of these accept either a group name (preferred) or a config path; no arg run
 
 | Command | What it does |
 |---------|--------------|
-| `gfleet skills install` | Deploy `generate-docs` skill to `~/.claude/skills/`, `~/.codeium/windsurf/skills/`, plus per-repo Windsurf workflow files. Auto-applies the graphify patch. |
+| `gfleet skills install` | Deploy skill to `~/.claude/skills/`, `~/.codeium/windsurf/skills/`, plus per-repo Windsurf workflows. Auto-applies the graphify patch. |
 | `gfleet skills uninstall` | Remove skill + per-repo workflows. |
 | `gfleet skills update` | Re-copy from local graphify-fleet repo (after `git pull`). |
 | `gfleet skills status` | Show what's installed where. |
@@ -264,22 +206,20 @@ All of these accept either a group name (preferred) or a config path; no arg run
 
 | Command | What it does |
 |---------|--------------|
-| `gfleet docs status [group]` | List generated doc state per repo (up-to-date, stale, not-yet-generated). |
+| `gfleet docs status [group]` | List doc state per repo (up-to-date, stale, not-yet-generated). |
 | `gfleet docs run <group>` | Print instructions to invoke `/generate-docs` in your IDE. |
 | `gfleet docs path <group>` | Print the group docs path. |
-| `gfleet docs init-cli <group>` | Headless CLI Q&A for docs config. **Prefer** running `/generate-docs --setup-only` in your IDE — it seeds answers from the codebase. |
+| `gfleet docs init-cli <group>` | Headless CLI Q&A. **Prefer** `/generate-docs --setup-only` in your IDE — it seeds answers from the codebase. |
 
 ### Monorepo
 
-Interactive-first; text args are CI-friendly fallback.
+Interactive-first; text args are CI-friendly fallback. Auto-detects via `pnpm-workspace.yaml`, `package.json` workspaces, `nx.json`, `turbo.json`, `lerna.json`, or multi-package fallback.
 
 | Command | What it does |
 |---------|--------------|
-| `gfleet monorepo add [group] [path]` | Pick group → pick monorepo path → multi-select modules. `--modules pkg/a,pkg/b` for non-interactive. |
+| `gfleet monorepo add [group] [path]` | Pick group → pick monorepo → multi-select modules. `--modules pkg/a,pkg/b` for non-interactive. |
 | `gfleet monorepo remove [group] [path]` | Deselect modules. |
 | `gfleet monorepo list` | Show indexed monorepo modules across all groups. |
-
-Auto-detects monorepos via `pnpm-workspace.yaml`, `package.json` workspaces, `nx.json`, `turbo.json`, `lerna.json`, or multi-package fallback.
 
 ### Patch (graphify local patch)
 
@@ -293,7 +233,7 @@ Auto-detects monorepos via `pnpm-workspace.yaml`, `package.json` workspaces, `nx
 
 ## Config schema
 
-A fleet config is a JSON file. One per group. See `examples/myapp.fleet.json` and `examples/monorepo.fleet.json`.
+A fleet config is a JSON file, one per group. See `examples/myapp.fleet.json` and `examples/monorepo.fleet.json`.
 
 ```json
 {
@@ -331,27 +271,25 @@ A fleet config is a JSON file. One per group. See `examples/myapp.fleet.json` an
 }
 ```
 
-**Stack values**: `react-native`, `node`, `python`, `python-generic`, `django`, `go`, `infra-terraform`, `infra-cdk`, `generic`. Drives the `.graphifyignore` template choice and the documentation skill's per-stack conventions.
+**Stack values**: `react-native`, `node`, `python`, `python-generic`, `django`, `go`, `infra-terraform`, `infra-cdk`, `generic`. Drives `.graphifyignore` template choice and per-stack documentation conventions.
 
-**Repo entry types**:
-- Default (no `type`) — standalone repo.
-- `type: "monorepo"` — has a `modules` array; each module is indexed independently.
+**Repo entry types**: default (no `type`) is a standalone repo; `type: "monorepo"` requires a `modules` array.
 
 **Options**:
-- `wiki_gitignored` — add `graphify-out/wiki/` to `.gitignore` (always recommended).
-- `watchers` — install a per-repo file watcher (off if you want manual rebuilds only).
-- `windsurf` — write Windsurf workflow + rules.
-- `claude_code` — write CLAUDE.md rules + per-project `.mcp.json` + PreToolUse hook.
+- `wiki_gitignored` — adds `graphify-out/wiki/` to `.gitignore` (recommended).
+- `watchers` — installs the per-repo file watcher.
+- `windsurf` — writes Windsurf workflow + rules.
+- `claude_code` — writes CLAUDE.md rules + per-project `.mcp.json` + PreToolUse hook.
 
 **Docs**:
-- `enabled` — install the generate-docs skill globally (idempotent, per-machine not per-group).
-- `group_docs_path` — where Pass 7 (group synthesis) writes cross-repo narrative docs. Defaults to the parent of the repos.
+- `enabled` — install the generate-docs skill globally (per-machine, idempotent).
+- `group_docs_path` — where Pass 7 (group synthesis) writes cross-repo docs. Defaults to the parent of the repos.
 
 ---
 
-## The `.gfleet/group.json` manifest (committed)
+## The `.gfleet/group.json` manifest
 
-Each repo gets a `.gfleet/group.json` written by `gfleet install`. **Commit it.** Teammates use it to run `gfleet onboard` after `git clone`.
+Each repo gets a `.gfleet/group.json` written by `gfleet install`. **Commit it** — teammates use it for `gfleet onboard`.
 
 ```json
 {
@@ -375,31 +313,19 @@ Each repo gets a `.gfleet/group.json` written by `gfleet install`. **Commit it.*
 }
 ```
 
-The manifest is **portable** — no absolute paths. `clone_url` is optional; if you set it manually (gfleet preserves manual edits across re-runs), `gfleet onboard` can `git clone` siblings the teammate doesn't have yet.
+Portable — no absolute paths. `clone_url` is optional; gfleet preserves manual edits across re-runs, and `gfleet onboard` will `git clone` siblings the teammate doesn't have.
 
 ---
 
 ## Multi-dev workflow
 
-graphify v0.7.0 introduced merge-conflict safety for `graph.json` via a git merge driver. gfleet automates the setup.
+graphify v0.7.0 added merge-conflict safety for `graph.json` via a git merge driver; gfleet automates the setup.
 
-### Initial setup (one dev)
-
-`gfleet wizard` (or `gfleet install`) per group registers the merge driver in each repo's `.git/config` and writes the corresponding line to `.gitattributes`. **Commit `.gitattributes`** so teammates pick it up.
-
-### Teammate onboarding
-
-After `git clone`:
-
-```bash
-gfleet onboard
-```
-
-Re-registers the merge driver in their local `.git/config`, sets up watchers, MCP, agent rules, and (if installed) the generate-docs skill.
+`gfleet wizard` (or `gfleet install`) registers the driver in each repo's `.git/config` and writes `.gitattributes`. **Commit `.gitattributes`.** Teammates run [`gfleet onboard`](#quick-start-teammate-joining) after cloning to register the driver locally.
 
 ### What "no more conflicts" looks like
 
-Two teammates commit graph rebuilds in parallel. On `git pull`, instead of:
+Two parallel commits no longer produce:
 
 ```
 <<<<<<< HEAD
@@ -409,17 +335,17 @@ Two teammates commit graph rebuilds in parallel. On `git pull`, instead of:
 >>>>>>> origin/main
 ```
 
-You get a clean union-merged `graph.json` with both sets of nodes/edges. No manual resolution. graphify v0.7.0 also seeded community detection so identical code produces identical community IDs across rebuilds — no spurious diffs.
+You get a clean union-merged `graph.json`. graphify v0.7.0 also seeded community detection so identical code produces identical community IDs across rebuilds — no spurious diffs.
 
 ### Graph freshness
 
-`graph.json` records the git commit it was built from. The agent rules instruct AI assistants to compare against `git rev-parse HEAD` before answering architecture questions; if stale, suggest `graphify update .` (the watcher should already be doing this — check `~/.cache/graphify-fleet/<group>/<slug>.log`).
+`graph.json` records its source commit. Agent rules tell AI assistants to compare against `git rev-parse HEAD` before answering architecture questions and suggest `graphify update .` if stale. The watcher should already be doing this — check `~/.cache/graphify-fleet/<group>/<slug>.log`.
 
 ---
 
-## Generated docs (the `generate-docs` skill)
+## Generated docs
 
-Once installed (auto with `gfleet wizard` if you check the docs box, or manually via `gfleet skills install`), the skill is invokable in Claude Code and Windsurf:
+After `gfleet skills install` (auto with `gfleet wizard` if docs is enabled), invoke in Claude Code or Windsurf:
 
 ```
 /generate-docs                 # current repo only
@@ -431,77 +357,45 @@ Once installed (auto with `gfleet wizard` if you check the docs box, or manually
 /generate-docs --module <name>    # one module across all artifacts
 ```
 
-The skill is module-first (one file per ViewSet/controller class, not one giant `api.md`), uses a verification checklist before marking files done, marks gaps explicitly with 🔴, and dual-saves every non-trivial discovery via `save-result` (so future agents benefit from prior runs).
+The skill is module-first (one file per ViewSet/controller, not one giant `api.md`), runs a verification checklist before marking files done, marks gaps with 🔴, and dual-saves discoveries via `save-result`.
 
-After the run, browse the docs via VitePress:
+Browse via VitePress (auto-generated config with sidebar, mermaid plugin, local search):
 
 ```bash
 cd <repo>/docs
 npm install
-npm run docs:dev    # opens http://localhost:5173
+npm run docs:dev    # http://localhost:5173
 ```
-
-The VitePress config is generated automatically with sidebar reflecting your folder structure, mermaid plugin, and local search.
 
 ---
 
 ## Troubleshooting
 
-### "Duplicate tool name: mcp0_get_community" in Windsurf
+**"Duplicate tool name: mcp0_get_community" in Windsurf** — graphify patch is missing. Run `gfleet patch status` (expect `applied (5/5 hunks)`) and `gfleet patch graphify` to re-apply. `uv tool upgrade graphifyy` typically causes this.
 
-This was the symptom that triggered the local graphify patch. With `gfleet patch graphify` applied, Windsurf only needs **one** `graphify-<group>` MCP entry (gfleet writes only that to Windsurf's global config). Run:
+**Watcher not firing** — `gfleet status <group>`, then `gfleet restart <group>`; logs at `~/.cache/graphify-fleet/<group>/`. macOS uses launchd; Linux uses `systemd --user` (run `loginctl enable-linger` for logout-survival); Windows uses Scheduled Tasks.
 
-```bash
-gfleet patch status   # should show: applied (5/5 hunks)
-gfleet doctor
-```
+**Graph stale after big refactor** — `graphify update` has shrink-protection. Run `gfleet rebuild <group>` to force past it, or `gfleet reset <group>` to wipe `graphify-out/` and rebuild.
 
-If the patch was lost (e.g. after `uv tool upgrade graphifyy`), `gfleet doctor` reports it. Run `gfleet patch graphify` to re-apply.
+**"graphify version: X — gfleet pins to Y"** — re-run `gfleet install` (or `gfleet skills install`) to re-pin and re-apply the patch.
 
-### Watcher not firing
+**`.gitattributes` conflict on merge** — resolve manually, keep the gfleet block. Re-runs of `gfleet install` are idempotent.
 
-```bash
-gfleet status <group>           # are watchers running?
-gfleet restart <group>          # restart them
-ls ~/.cache/graphify-fleet/<group>/   # check logs
-```
-
-On macOS, the watcher uses `launchd` and survives reboots. On Linux, `systemd --user` (run `loginctl enable-linger` if you want them to survive logout). On Windows, Scheduled Tasks.
-
-### Graph stale after big refactor
-
-`graphify update` has shrink-protection (refuses to overwrite a graph with a smaller one). If you deleted lots of files:
-
-```bash
-gfleet rebuild <group>          # forces rebuild past shrink-protection
-gfleet reset <group>            # nuclear: wipes graphify-out/ and rebuilds from scratch
-```
-
-### "graphify version: X — gfleet pins to Y"
-
-`uv tool upgrade graphifyy` moved past gfleet's pin. Re-run `gfleet install` (or `gfleet skills install`) to re-pin and re-apply the patch.
-
-### `.gitattributes` conflict on merge
-
-Standard git workflow: resolve manually, keep the gfleet block. Future re-runs of `gfleet install` are idempotent — they detect the existing block and don't duplicate.
-
-### Onboard says "no .gfleet/group.json"
-
-The original dev didn't commit it. Have them run `gfleet install` again (auto-writes the manifest) and commit `.gfleet/group.json` + `.gitattributes`.
+**Onboard says "no .gfleet/group.json"** — original dev didn't commit it. They should run `gfleet install` and commit `.gfleet/group.json` + `.gitattributes`.
 
 ---
 
 ## Versioning
 
-- `gfleet --help` shows the gfleet CLI version
-- `gfleet doctor` shows the pinned graphifyy version
-- Bumping `GRAPHIFY_PIN` in `src/util.js` requires re-validating the patch anchors against the new graphify release. The patch is content-anchored — it skips hunks that don't match upstream changes and reports partial state via `gfleet patch status`.
+- `gfleet --help` shows the gfleet CLI version.
+- `gfleet doctor` shows the pinned graphifyy version.
+- Bumping `GRAPHIFY_PIN` in `src/util.js` requires re-validating patch anchors against the new graphify release. The patch is content-anchored — it skips non-matching hunks and reports partial state via `gfleet patch status`.
 
 ---
 
 ## Contributing / extending
 
 - New stack convention: drop a `skills/generate-docs/conventions/<stack>.md` and reference it by `stack` in fleet configs.
-- New monorepo detector: add a detector function to `src/monorepo.js` `DETECTORS` array.
+- New monorepo detector: add a function to `src/monorepo.js` `DETECTORS`.
 - New MCP server: extend `writeMcpJson` in `src/integrations.js`.
 - New CLI command: wire it in `src/cli.js`.

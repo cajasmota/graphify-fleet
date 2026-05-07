@@ -12,6 +12,7 @@ import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
 import { onboard } from './onboard.js';
+import { update } from './update.js';
 import { conventionsList, conventionsAdd, conventionsRemove } from './conventions.js';
 
 const VERSION = '0.2.0';
@@ -28,6 +29,8 @@ function help() {
     log.say('SETUP');
     log.say('  wizard                              interactive first-time setup (creates config + installs)');
     log.say('  onboard   [path]                    join an existing group after git clone (reads .gfleet/group.json)');
+    log.say('  update    [--refresh-rules]         git pull gfleet, npm install, redeploy skills + patch');
+    log.say('                                       --refresh-rules also re-runs install on every registered group');
     log.say('  doctor                              check prerequisites');
     log.say('  install   <config.json>             install fleet group + register it');
     log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs (purge = also delete graphify-out)');
@@ -146,6 +149,12 @@ export async function main(argv) {
             case 'doctor':    doctor(); break;
             case 'wizard': case 'new': await wizard(); break;
             case 'onboard': await onboard(args[0] ?? '.'); break;
+            case 'update': {
+                const refreshRules = args.includes('--refresh-rules');
+                const force = args.includes('--force');
+                await update({ refreshRules, force });
+                break;
+            }
             case 'list': case 'ls': ops.list(); break;
             case 'install': {
                 if (!args[0]) die('usage: gfleet install <config.json>');
@@ -212,11 +221,22 @@ export async function main(argv) {
                 break;
             }
             case 'monorepo': {
+                // args[0] is the subcommand (add/remove/list).
+                // Remaining args are positional [group] [path] plus optional flag --modules a,b,c.
                 const sub = args[0];
-                // optional positional args: <group> <path>; flag --modules a,b,c
-                const modulesIdx = args.indexOf('--modules');
-                const modules = modulesIdx >= 0 ? args[modulesIdx + 1].split(',').map(s => s.trim()) : undefined;
-                const positional = args.slice(1).filter((_, i, arr) => arr.indexOf('--modules') === -1 && arr[i] !== modules?.join(','));
+                const rest = args.slice(1);
+                let modules;
+                const positional = [];
+                for (let i = 0; i < rest.length; i++) {
+                    if (rest[i] === '--modules') {
+                        const v = rest[i + 1];
+                        if (v === undefined) die('--modules requires a value (comma-separated module paths)');
+                        modules = v.split(',').map(s => s.trim()).filter(Boolean);
+                        i++; // skip the value
+                        continue;
+                    }
+                    positional.push(rest[i]);
+                }
                 const group = positional[0];
                 const path  = positional[1];
                 switch (sub) {

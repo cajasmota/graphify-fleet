@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import {
     TEMPLATES_DIR, LOCAL_BIN, GROUPS_DIR, IS_WIN,
     ensureDir, readJson, writeJson, log, run, runOrThrow, graphifyPython,
+    getGitDir,
 } from './util.js';
 
 const STACK_TEMPLATES = ['react-native', 'python', 'node', 'go', 'generic'];
@@ -272,8 +273,10 @@ export function removeGroupManifest(repo) {
 export function installGitHooks(repo, group, helperPath) {
     const r = run('graphify', ['hook', 'install'], { cwd: repo });
     if (r.code !== 0) log.warn('graphify hook install failed (continuing)');
+    const gitDir = getGitDir(repo);
+    if (!gitDir) { log.warn(`could not resolve .git dir at ${repo}; skipping hook append`); return; }
     for (const name of HOOK_NAMES) {
-        const f = join(repo, '.git', 'hooks', name);
+        const f = join(gitDir, 'hooks', name);
         if (!existsSync(f)) continue;
         const cur = readFileSync(f, 'utf8');
         if (cur.includes(`gfleet-start (${group})`)) continue;
@@ -287,8 +290,10 @@ export function installGitHooks(repo, group, helperPath) {
 }
 
 export function removeGitHooks(repo, group) {
+    const gitDir = getGitDir(repo);
+    if (!gitDir) return;
     for (const name of HOOK_NAMES) {
-        const f = join(repo, '.git', 'hooks', name);
+        const f = join(gitDir, 'hooks', name);
         if (!existsSync(f)) continue;
         const cur = readFileSync(f, 'utf8');
         const re = new RegExp(`\\n?# gfleet-start \\(${group}\\)[\\s\\S]*?# gfleet-end \\(${group}\\)\\n?`, 'g');
@@ -297,17 +302,30 @@ export function removeGitHooks(repo, group) {
     }
 }
 
-export function removeMcpEntry(repo) {
+export function removeMcpEntry(repo, repoSlug = null, group = null) {
     const f = join(repo, '.mcp.json');
     if (!existsSync(f)) return;
     const obj = readJson(f);
-    if (!obj.mcpServers?.graphify) return;
-    delete obj.mcpServers.graphify;
+    if (!obj.mcpServers) return;
+    let removed = false;
+    // Legacy single-key entry from older gfleet versions
+    if (obj.mcpServers.graphify) { delete obj.mcpServers.graphify; removed = true; }
+    // Per-repo entry (current format)
+    if (repoSlug && obj.mcpServers[`graphify-${repoSlug}`]) {
+        delete obj.mcpServers[`graphify-${repoSlug}`];
+        removed = true;
+    }
+    // Group entry (current format)
+    if (group && obj.mcpServers[`graphify-${group}`]) {
+        delete obj.mcpServers[`graphify-${group}`];
+        removed = true;
+    }
+    if (!removed) return;
     if (Object.keys(obj.mcpServers).length === 0) {
         try { unlinkSync(f); log.info('.mcp.json removed (was empty)'); } catch {}
     } else {
         writeJson(f, obj);
-        log.info('.mcp.json: graphify entry removed');
+        log.info('.mcp.json: graphify entries removed');
     }
 }
 

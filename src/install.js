@@ -1,8 +1,8 @@
 import { existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-    loadConfig, log, run, ensureGraphify, registerGroup, ensureDir,
-    GROUPS_DIR,
+    loadConfig, log, run, ensureGraphify, registerGroup, unregisterGroup, ensureDir,
+    GROUPS_DIR, getGitDir,
 } from './util.js';
 import {
     writeGraphifyignore, updateGitignore, writeMcpJson,
@@ -43,7 +43,7 @@ export async function install(configPath) {
         // Find .git root: for standalone repos it's <path>/.git; for monorepo
         // modules the .git lives at monorepoRoot, not at the module path.
         const gitRoot = r.monorepoRoot ?? r.path;
-        if (!existsSync(join(gitRoot, '.git'))) {
+        if (getGitDir(gitRoot) === null) {
             log.warn(`not a git repo (no .git at ${gitRoot}), skipping`);
             continue;
         }
@@ -111,12 +111,12 @@ export function uninstall(configPath, opts = {}) {
         log.say('');
         log.head(r.slug);
         const gitRoot = r.monorepoRoot ?? r.path;
-        if (existsSync(join(gitRoot, '.git')) && !unhookedGitRoots.has(gitRoot)) {
+        if (getGitDir(gitRoot) !== null && !unhookedGitRoots.has(gitRoot)) {
             removeGitHooks(gitRoot, cfg.group);
             removeMergeDriver(gitRoot);
             unhookedGitRoots.add(gitRoot);
         }
-        removeMcpEntry(r.path);
+        removeMcpEntry(r.path, r.slug, cfg.group);
         removeWindsurfFiles(r.path);
         removeGroupManifest(r.path);
         uninstallWatcher(cfg.group, r.slug);
@@ -132,7 +132,7 @@ export function uninstall(configPath, opts = {}) {
     removeWindsurfGlobalMcp(cfg.group);
 
     // unregister from registry
-    import('./util.js').then(({ unregisterGroup }) => unregisterGroup(cfg.group));
+    unregisterGroup(cfg.group);
     log.say('');
     log.ok(`group '${cfg.group}' uninstalled.${opts.purge ? '' : ' Per-repo graphify-out/ left intact.'}`);
 }

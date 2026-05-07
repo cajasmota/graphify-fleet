@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'no
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { applyPatch as applyGraphifyPatch } from './patches/graphify-repo-filter.js';
 
 export const HOME = homedir();
 export const PLATFORM = platform();
@@ -42,6 +43,32 @@ export function expandPath(p) {
     return p;
 }
 export function ensureDir(p) { mkdirSync(p, { recursive: true }); }
+
+// Resolve the actual .git directory for a working tree.
+// - Standard repo: <gitRoot>/.git is a directory; return it.
+// - Worktree: <gitRoot>/.git is a file containing "gitdir: <path>"; resolve and return that path.
+// - Otherwise: return null.
+export function getGitDir(gitRoot) {
+    const dotGit = join(gitRoot, '.git');
+    if (!existsSync(dotGit)) return null;
+    let st;
+    try { st = statSync(dotGit); } catch { return null; }
+    if (st.isDirectory()) return dotGit;
+    if (st.isFile()) {
+        try {
+            const content = readFileSync(dotGit, 'utf8');
+            const m = content.match(/^gitdir:\s*(.+)\s*$/m);
+            if (!m) return null;
+            const target = m[1].trim();
+            // gitdir may be relative to gitRoot
+            const resolved = target.startsWith('/') || /^[A-Za-z]:[\\/]/.test(target)
+                ? target
+                : resolve(gitRoot, target);
+            return existsSync(resolved) ? resolved : null;
+        } catch { return null; }
+    }
+    return null;
+}
 
 // ----- shell -----
 export function which(cmd) {
@@ -182,12 +209,25 @@ export function graphifyPython() {
 // gfleet patch graphify will print a warning if installed != pinned.
 export const GRAPHIFY_PIN = '0.7.9';
 
+// Re-apply the repo-filter patch after any uv tool install of graphifyy.
+// `--reinstall` (and even initial install) replaces site-packages and wipes
+// the patch, so we always re-apply to keep it self-healing. Failures here
+// are non-fatal — log and continue.
+function reapplyGraphifyPatch() {
+    try {
+        applyGraphifyPatch({ verbose: false });
+    } catch (e) {
+        log.warn(`graphify patch re-apply failed (continuing): ${e.message}`);
+    }
+}
+
 export function ensureGraphify(verbose = true) {
     if (!which('uv')) die('uv is required. install: curl -LsSf https://astral.sh/uv/install.sh | sh');
     const spec = `graphifyy==${GRAPHIFY_PIN}`;
     if (!graphifyBin()) {
         if (verbose) log.info(`installing ${spec} via uv (with mcp + watchdog extras)...`);
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog']);
+        reapplyGraphifyPatch();
         return;
     }
     const py = graphifyPython();
@@ -197,12 +237,14 @@ export function ensureGraphify(verbose = true) {
     if (installed && installed !== GRAPHIFY_PIN) {
         if (verbose) log.warn(`graphifyy ${installed} is installed; gfleet pins to ${GRAPHIFY_PIN}. Pinning now (will re-apply patch after).`);
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        reapplyGraphifyPatch();
         return;
     }
     const ok = runOk(py, ['-c', 'import mcp, watchdog']);
     if (!ok) {
         if (verbose) log.info('adding mcp + watchdog extras to graphifyy...');
         runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        reapplyGraphifyPatch();
     }
 }
 
