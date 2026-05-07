@@ -114,6 +114,35 @@ export function resolveConfigArg(arg) {
     die(`no config file or registered group named: ${arg} (try 'gfleet list')`);
 }
 
+// Flatten monorepo entries into a flat list of virtual repos.
+// Lives in util.js to avoid a util→monorepo→util circular import.
+export function flattenRepos(rawRepos) {
+    const flat = [];
+    for (const entry of rawRepos) {
+        if (entry.type === 'monorepo') {
+            const root = resolve(expandPath(entry.path));
+            for (const m of (entry.modules ?? [])) {
+                const monoSlug = basename(root).replace(/[^a-zA-Z0-9_-]/g, '-');
+                const moduleSlug = m.path.replace(/\//g, '-').replace(/[^a-zA-Z0-9_-]/g, '-');
+                flat.push({
+                    path: join(root, m.path),
+                    slug: m.slug || `${monoSlug}-${moduleSlug}`.toLowerCase(),
+                    stack: m.stack || 'generic',
+                    monorepoRoot: root,
+                });
+            }
+        } else {
+            flat.push({
+                path: expandPath(entry.path),
+                slug: entry.slug || basename(expandPath(entry.path)),
+                stack: entry.stack || 'generic',
+                monorepoRoot: null,
+            });
+        }
+    }
+    return flat;
+}
+
 export function loadConfig(configPath) {
     const c = readJson(configPath);
     if (!c.group) die(`config missing 'group': ${configPath}`);
@@ -121,18 +150,16 @@ export function loadConfig(configPath) {
     return {
         configPath: resolve(configPath),
         group: c.group,
-        repos: c.repos.map(r => ({
-            path:  expandPath(r.path),
-            slug:  r.slug || basename(expandPath(r.path)),
-            stack: r.stack || 'generic',
-        })),
+        repos: flattenRepos(c.repos),
         options: {
             wiki_gitignored: c.options?.wiki_gitignored ?? true,
             watchers:        c.options?.watchers        ?? true,
             windsurf:        c.options?.windsurf        ?? true,
             claude_code:     c.options?.claude_code     ?? true,
         },
+        docs: c.docs ?? null,
         groupGraph: join(GROUPS_DIR, `${c.group}.json`),
+        rawRepos: c.repos,  // preserve for editing (monorepo add/remove)
     };
 }
 

@@ -9,6 +9,7 @@ import * as ops from './ops.js';
 import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
 import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
+import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 
 const VERSION = '0.2.0';
 
@@ -40,6 +41,12 @@ function help() {
     log.say('  docs init-cli <group>               headless CLI Q&A for docs config (no LLM)');
     log.say('                                       — prefer /generate-docs --setup-only in your IDE');
     log.say('                                         which seeds answers from the codebase');
+    log.say('');
+    log.say('MONOREPO');
+    log.say('  monorepo add    [group] [path]      pick monorepo + select modules (interactive)');
+    log.say('                                       text args: --modules pkg/a,pkg/b   for scripting');
+    log.say('  monorepo remove [group] [path]      deselect modules (interactive)');
+    log.say('  monorepo list                       show indexed monorepo modules across all groups');
     log.say('');
     log.say('INSPECT');
     log.say('  list  (or: ls)                      show all registered groups + node counts');
@@ -142,6 +149,22 @@ export async function main(argv) {
                     case 'update':    skillsUpdate(); break;
                     case 'status':    skillsStatus(); break;
                     default: die('usage: gfleet skills {install|uninstall|update|status}');
+                }
+                break;
+            }
+            case 'monorepo': {
+                const sub = args[0];
+                // optional positional args: <group> <path>; flag --modules a,b,c
+                const modulesIdx = args.indexOf('--modules');
+                const modules = modulesIdx >= 0 ? args[modulesIdx + 1].split(',').map(s => s.trim()) : undefined;
+                const positional = args.slice(1).filter((_, i, arr) => arr.indexOf('--modules') === -1 && arr[i] !== modules?.join(','));
+                const group = positional[0];
+                const path  = positional[1];
+                switch (sub) {
+                    case 'add':    await monorepoAdd({ group, path, modules }); break;
+                    case 'remove': await monorepoRemove({ group, path, modules }); break;
+                    case 'list':   monorepoList(); break;
+                    default: die('usage: gfleet monorepo {add|remove|list} [group] [path] [--modules a,b]');
                 }
                 break;
             }
