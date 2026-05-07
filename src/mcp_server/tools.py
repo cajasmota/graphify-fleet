@@ -67,41 +67,172 @@ def _unavailable_response(repo: str, reason: str) -> str:
     return json.dumps(payload)
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: Optional[list[str]] = None) -> str:
-    char_budget = token_budget * 3
-    lines: list[str] = []
-    seed_set = set(seeds or [])
-    ordered = [n for n in (seeds or []) if n in nodes] + sorted(
-        nodes - seed_set, key=lambda n: G.degree(n) if n in G else 0, reverse=True
+# Smart truncation knobs.
+#
+# `len(text) / 4` is a cheap, dependency-free proxy for token count (English
+# averages ~4 chars/token). Good enough to keep MCP responses within agent
+# context budgets without pulling in tiktoken.
+_CHARS_PER_TOKEN = 4
+# When two nodes are within this BM25 score band we treat them as tied and
+# keep the higher-degree one first (god-node tiebreaker).
+_DEGREE_TIEBREAK_BAND = 0.5
+# Floor: even with a tiny `token_budget`, return at least one node when any
+# matched, so the agent gets *something* useful.
+_MIN_NODES_KEPT = 1
+
+
+def _approx_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
+
+def _node_line(G: nx.Graph, nid: str) -> str:
+    d = G.nodes[nid]
+    return (
+        f"NODE {_sanitize_label(d.get('label', nid))} "
+        f"[src={d.get('source_file', '')} loc={d.get('source_location', '')} "
+        f"community={d.get('community', '')} repo={d.get('repo', '')}]"
     )
-    for nid in ordered:
+
+
+def _edge_line(G: nx.Graph, u: str, v: str) -> Optional[str]:
+    if not G.has_edge(u, v):
+        return None
+    raw = G[u][v]
+    d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+    context = d.get("context")
+    context_suffix = f" context={context}" if context else ""
+    method = d.get("method")
+    method_suffix = f" method={method}" if method else ""
+    return (
+        f"EDGE {_sanitize_label(G.nodes[u].get('label', u))} "
+        f"--{d.get('relation', '')} [{d.get('confidence', '')}{context_suffix}{method_suffix}]--> "
+        f"{_sanitize_label(G.nodes[v].get('label', v))}"
+    )
+
+
+def _category_for(d: dict) -> str:
+    """Pick a category label for the truncation footer breakdown."""
+    return d.get("file_type") or d.get("repo") or "unknown"
+
+
+def _rank_nodes_for_truncation(
+    G: nx.Graph,
+    nodes: set[str],
+    seeds: list[str],
+    scores: dict[str, float],
+) -> list[str]:
+    """Order nodes for the smart-truncation walker.
+
+    Seeds come first (in the order returned by `_score_nodes`). The remaining
+    nodes are ordered by relevance score; ties within `_DEGREE_TIEBREAK_BAND`
+    are broken by node degree so god-nodes win against equally-relevant but
+    less-connected siblings.
+    """
+    seed_set = set(seeds)
+    ordered_seeds = [n for n in seeds if n in nodes]
+    rest = [n for n in nodes if n not in seed_set]
+
+    def _key(n: str) -> tuple[float, int]:
+        # Negate so Python's ascending sort produces descending order when
+        # we sort by tuple. Score primary, degree secondary.
+        s = scores.get(n, 0.0)
+        deg = G.degree(n) if n in G else 0
+        return (-s, -deg)
+
+    rest.sort(key=_key)
+    # Apply the degree tiebreak band: walk in order, swap a slightly lower-
+    # scoring high-degree node ahead of a slightly higher-scoring low-degree
+    # one when they're within the band.
+    i = 0
+    while i < len(rest) - 1:
+        a, b = rest[i], rest[i + 1]
+        sa, sb = scores.get(a, 0.0), scores.get(b, 0.0)
+        if abs(sa - sb) <= _DEGREE_TIEBREAK_BAND:
+            da = G.degree(a) if a in G else 0
+            db = G.degree(b) if b in G else 0
+            if db > da:
+                rest[i], rest[i + 1] = b, a
+        i += 1
+    return ordered_seeds + rest
+
+
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: Optional[list[str]] = None,
+    scores: Optional[dict[str, float]] = None,
+) -> str:
+    """Emit nodes + edges as text, truncating to fit `token_budget`.
+
+    Nodes are walked in relevance order (seeds first, then BM25 score, then
+    degree tiebreaker). When the running token total would exceed the
+    budget, emit a footer summarizing the omitted set instead of more nodes.
+    Always emits at least `_MIN_NODES_KEPT` matched nodes when any exist.
+    """
+    budget = max(200, int(token_budget or 0)) if token_budget and token_budget > 0 else 200
+    seeds = seeds or []
+    scores = scores or {}
+
+    ordered_nodes = _rank_nodes_for_truncation(G, nodes, seeds, scores)
+
+    kept: list[str] = []
+    omitted: list[str] = []
+    lines: list[str] = []
+    used_tokens = 0
+
+    for idx, nid in enumerate(ordered_nodes):
         if nid not in G:
             continue
-        d = G.nodes[nid]
-        line = (
-            f"NODE {_sanitize_label(d.get('label', nid))} "
-            f"[src={d.get('source_file', '')} loc={d.get('source_location', '')} "
-            f"community={d.get('community', '')} repo={d.get('repo', '')}]"
-        )
+        line = _node_line(G, nid)
+        line_tokens = _approx_tokens(line) + 1  # +1 for newline
+        if used_tokens + line_tokens > budget and len(kept) >= _MIN_NODES_KEPT:
+            omitted = [n for n in ordered_nodes[idx:] if n in G]
+            break
+        kept.append(nid)
         lines.append(line)
+        used_tokens += line_tokens
+
+    kept_set = set(kept)
     for u, v in edges:
-        if u in nodes and v in nodes and G.has_edge(u, v):
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
-            context = d.get("context")
-            context_suffix = f" context={context}" if context else ""
-            method = d.get("method")
-            method_suffix = f" method={method}" if method else ""
-            line = (
-                f"EDGE {_sanitize_label(G.nodes[u].get('label', u))} "
-                f"--{d.get('relation', '')} [{d.get('confidence', '')}{context_suffix}{method_suffix}]--> "
-                f"{_sanitize_label(G.nodes[v].get('label', v))}"
-            )
+        if u in kept_set and v in kept_set:
+            line = _edge_line(G, u, v)
+            if line is None:
+                continue
+            line_tokens = _approx_tokens(line) + 1
+            # Edges share the budget; stop emitting them once exhausted but
+            # don't roll them into the omitted-node footer (different shape).
+            if used_tokens + line_tokens > budget:
+                break
             lines.append(line)
-    output = "\n".join(lines)
-    if len(output) > char_budget:
-        output = output[:char_budget] + f"\n... (truncated to ~{token_budget} token budget)"
-    return output
+            used_tokens += line_tokens
+
+    if omitted:
+        # Categorical breakdown of what we dropped.
+        counts: dict[str, int] = {}
+        for nid in omitted:
+            cat = _category_for(G.nodes[nid] if nid in G else {})
+            counts[cat] = counts.get(cat, 0) + 1
+        breakdown = ", ".join(
+            f"{n} {c}" for c, n in sorted(counts.items(), key=lambda kv: -kv[1])
+        )
+        # Threshold = the score of the first omitted node, if known. Useful
+        # to the agent: it knows where the relevance cliff is.
+        if omitted and omitted[0] in scores:
+            threshold_text = f"{scores[omitted[0]]:.2f}"
+        else:
+            threshold_text = "n/a"
+        lines.append(
+            f"... and {len(omitted)} more results omitted "
+            f"(total relevance dropped below threshold {threshold_text}). "
+            f"Top categories of omitted results: {breakdown}"
+        )
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +264,7 @@ def query_graph(state: GraphState, arguments: dict) -> str:
     start_nodes = [nid for _, nid in scored[:3]]
     if not start_nodes:
         return "No matching nodes found."
+    score_map = {nid: s for s, nid in scored}
     resolved, source = _resolve_context_filters(question, context_filter)
     traversal = _filter_graph_by_context(G, resolved)
     nodes, edges = (
@@ -145,7 +277,9 @@ def query_graph(state: GraphState, arguments: dict) -> str:
     if resolved:
         header += f"| Context: {', '.join(resolved)} ({source}) "
     header += f"| {len(nodes)} nodes\n\n"
-    return header + _subgraph_to_text(traversal, nodes, edges, budget, seeds=start_nodes)
+    return header + _subgraph_to_text(
+        traversal, nodes, edges, budget, seeds=start_nodes, scores=score_map
+    )
 
 
 def get_node(state: GraphState, arguments: dict) -> str:

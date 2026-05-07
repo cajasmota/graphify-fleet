@@ -1092,3 +1092,194 @@ print('OK')
         assert.match(r.stdout, /OK/);
     } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------------------
+// BM25 scoring (_score_nodes)
+// ---------------------------------------------------------------------------
+
+test('BM25 scoring: rare query terms outweigh common ones', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.scoring import _score_nodes
+
+G = nx.Graph()
+# Many "Class" nodes (common term), one "Order" node (rare).
+for i in range(20):
+    G.add_node(f'c{i}', label=f'SomeClass{i}')
+G.add_node('order', label='OrderHandler')
+G.add_node('mixed', label='OrderClassRoom')
+
+scored = _score_nodes(G, ['order', 'class'])
+top_id = scored[0][1]
+# The rare term 'order' should dominate, putting an Order-bearing node on top.
+assert top_id in ('order', 'mixed'), f"expected order-bearing top, got {top_id}: {scored[:3]}"
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `BM25 rare-term script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('BM25 scoring: shorter labels beat longer ones for the same term', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.scoring import _score_nodes
+
+G = nx.Graph()
+# Filler so 'order' is meaningful but not unique.
+for i in range(5):
+    G.add_node(f'f{i}', label=f'Filler{i}')
+G.add_node('short', label='Order')
+G.add_node('long', label='SomeReallyLongOrderRelatedThing')
+
+scored = _score_nodes(G, ['order'])
+# The exact-label 'Order' should win because of the exact-match bonus AND
+# length normalization. Either way, 'short' must beat 'long'.
+ranks = {nid: i for i, (_, nid) in enumerate(scored)}
+assert ranks['short'] < ranks['long'], scored
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `BM25 length-norm script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('BM25 scoring: exact label match wins over multi-term partial matches', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.scoring import _score_nodes
+
+G = nx.Graph()
+G.add_node('exact', label='Order')
+G.add_node('partial', label='OrderHandlerClassThing')
+for i in range(10):
+    G.add_node(f'f{i}', label=f'Filler{i}')
+
+scored = _score_nodes(G, ['order'])
+top_id = scored[0][1]
+assert top_id == 'exact', f"expected exact-match winner, got {top_id}: {scored[:3]}"
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `BM25 exact-match script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('BM25 scoring: camelCase tokenization splits OrderViewSet for "order viewset" query', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.scoring import _score_nodes, _tokenize
+
+# Token-level sanity check first.
+toks = _tokenize('OrderViewSet')
+assert toks == ['order', 'view', 'set'], toks
+
+G = nx.Graph()
+G.add_node('target', label='OrderViewSet')
+G.add_node('decoy', label='SomethingElse')
+scored = _score_nodes(G, ['order', 'viewset'])
+ids = [nid for _, nid in scored]
+assert 'target' in ids, ids
+assert ids[0] == 'target', ids
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `BM25 camelCase script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+// ---------------------------------------------------------------------------
+// query_graph token-budget truncation
+// ---------------------------------------------------------------------------
+
+test('query_graph truncation: respects token_budget and emits omission footer', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const nodes = [];
+        const links = [];
+        for (let i = 0; i < 20; i++) {
+            nodes.push({ id: `n${i}`, label: `OrderThing${i}`, norm_label: `orderthing${i}`, file_type: i % 2 === 0 ? 'function' : 'class' });
+            if (i > 0) links.push({ source: `n0`, target: `n${i}`, relation: 'calls', confidence: 1.0 });
+        }
+        seedLinkedGraphFile(graphsDir, 'r', nodes, links);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'OrderThing search', 'token_budget': 200, 'repo_filter': 'r'})
+# Footer present.
+assert 'omitted' in out, out
+# Approximate token budget respected (chars/4 heuristic, plus header slack).
+assert len(out) // 4 < 1500, f"output too large: {len(out)} chars"
+# Breakdown mentions one of our categories.
+assert ('function' in out) or ('class' in out), out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `truncation footer script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph truncation: tiny token_budget still returns at least one node', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const nodes = [];
+        for (let i = 0; i < 5; i++) {
+            nodes.push({ id: `n${i}`, label: `OrderThing${i}`, norm_label: `orderthing${i}` });
+        }
+        seedLinkedGraphFile(graphsDir, 'r', nodes, []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'OrderThing search', 'token_budget': 10, 'repo_filter': 'r'})
+assert 'NODE' in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `always-1 script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph truncation: degree tiebreak keeps high-degree node when scores are close', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.tools import _rank_nodes_for_truncation
+
+G = nx.Graph()
+G.add_node('hub', label='Hub')
+G.add_node('iso', label='Iso')
+# Hub has many neighbors; iso has none.
+for i in range(10):
+    G.add_node(f'p{i}')
+    G.add_edge('hub', f'p{i}')
+
+# Tie scores within the band (0.5).
+scores = {'hub': 1.2, 'iso': 1.4}
+ordered = _rank_nodes_for_truncation(G, {'hub', 'iso'}, [], scores)
+assert ordered.index('hub') < ordered.index('iso'), ordered
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `degree-tiebreak script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
