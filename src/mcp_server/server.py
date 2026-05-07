@@ -28,6 +28,7 @@ from typing import Optional
 
 from . import tools as _tools
 from .state import GraphState
+from .telemetry import debug_level, get_telemetry, verbose_log
 from .utils import _filter_blank_stdin
 
 
@@ -48,6 +49,37 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
         + (f" unavailable={sorted(state.unavailable.keys())}" if state.unavailable else ""),
         file=sys.stderr,
     )
+
+    # Telemetry / debug-knob announcement.
+    _level = debug_level()
+    if _level == 0:
+        print("[telemetry] debug=off", file=sys.stderr)
+    elif _level == 1:
+        print("[telemetry] debug=on (level 1: warnings + summary)", file=sys.stderr)
+    else:
+        print(f"[telemetry] debug=on (level {_level}: verbose per-call)", file=sys.stderr)
+
+    # Install a SIGUSR1 handler (POSIX only) that dumps the telemetry summary
+    # to stderr on demand. Allows `kill -USR1 <pid>` for live introspection.
+    try:
+        import signal as _signal
+        if hasattr(_signal, "SIGUSR1"):
+            def _dump(_signum, _frame) -> None:  # noqa: ANN001
+                print(get_telemetry().summary(state=state), file=sys.stderr)
+            _signal.signal(_signal.SIGUSR1, _dump)
+    except (ValueError, OSError):
+        # Not the main thread, or platform without signals — skip silently.
+        pass
+
+    # On normal shutdown, dump the summary if debug is enabled.
+    import atexit as _atexit
+    def _atexit_dump() -> None:
+        if debug_level() >= 1:
+            try:
+                print(get_telemetry().summary(state=state), file=sys.stderr)
+            except Exception:  # noqa: BLE001
+                pass
+    _atexit.register(_atexit_dump)
 
     server_name = f"gfleet-{group}" if group else "gfleet"
     server = Server(server_name)
@@ -202,6 +234,14 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                 },
             ),
             types.Tool(
+                name="get_telemetry",
+                description="Return a one-shot summary of the gfleet MCP server's runtime telemetry: per-tool call counts and latencies, reload counts, link-table sizes, error tallies, and current graph memory.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            types.Tool(
                 name="save_result",
                 description="Persist a question/answer pair (and the supporting node IDs) so the agent can refer back to it later. Writes to ~/.graphify/groups/<group>-memory/<timestamp>-<sha8>.json. Returns the absolute path.",
                 inputSchema={
@@ -232,16 +272,33 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
         "recent_activity": lambda args: _tools.recent_activity(state, args),
         "list_link_candidates": lambda args: _tools.list_link_candidates(state, args),
         "resolve_link_candidate": lambda args: _tools.resolve_link_candidate(state, args),
+        # Synthetic introspection tool: returns the telemetry summary as text.
+        "get_telemetry": lambda args: get_telemetry().summary(state=state),
     }
+
+    import time as _time
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):  # type: ignore[override]
         handler = _handlers.get(name)
         if not handler:
+            get_telemetry().incr("error.unknown_tool")
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        tel = get_telemetry()
+        tel.incr(f"tool.{name}.calls")
+        verbose_log(f"call {name} args={list((arguments or {}).keys())}")
+        t0 = _time.monotonic()
         try:
-            return [types.TextContent(type="text", text=handler(arguments))]
+            result = handler(arguments)
+            elapsed_ms = (_time.monotonic() - t0) * 1000.0
+            tel.record_latency(name, elapsed_ms)
+            verbose_log(f"done {name} in {elapsed_ms:.1f}ms")
+            return [types.TextContent(type="text", text=result)]
         except Exception as exc:  # noqa: BLE001 — tool errors must not kill the server
+            elapsed_ms = (_time.monotonic() - t0) * 1000.0
+            tel.record_latency(name, elapsed_ms)
+            tel.incr(f"error.{name}.{type(exc).__name__}")
+            verbose_log(f"error {name} after {elapsed_ms:.1f}ms: {type(exc).__name__}: {exc}")
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
 
     _filter_blank_stdin()

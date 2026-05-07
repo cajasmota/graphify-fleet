@@ -7,12 +7,25 @@ import threading
 
 
 def debug_enabled() -> bool:
-    """Whether GFLEET_MCP_DEBUG=1 is set. Used to gate verbose stderr logging."""
-    return os.environ.get("GFLEET_MCP_DEBUG") == "1"
+    """Whether GFLEET_MCP_DEBUG is at level >= 1. Used to gate stderr logging.
+
+    Levels (formalized — see SCHEMA.md):
+      0 (default) — silent.
+      1           — debug + warning lines + telemetry summary on shutdown.
+      2+          — verbose per-tool-call entry/exit with timing.
+    """
+    raw = os.environ.get("GFLEET_MCP_DEBUG", "")
+    if not raw:
+        return False
+    try:
+        return int(raw) >= 1
+    except ValueError:
+        # Legacy: treat the literal "1" as on; any other non-numeric as off.
+        return raw == "1"
 
 
 def debug_log(msg: str) -> None:
-    """Print a debug line to stderr only when GFLEET_MCP_DEBUG=1."""
+    """Print a debug line to stderr when GFLEET_MCP_DEBUG>=1."""
     if debug_enabled():
         print(f"[mcp_server] {msg}", file=sys.stderr)
 

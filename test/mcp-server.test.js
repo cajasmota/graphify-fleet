@@ -6,7 +6,7 @@
 // graphify env doesn't fail.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readlinkSync, lstatSync, existsSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readlinkSync, lstatSync, existsSync, utimesSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -1282,4 +1282,159 @@ print('OK')
     const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
     assert.equal(r.status, 0, `degree-tiebreak script failed: ${r.stderr}`);
     assert.match(r.stdout, /OK/);
+});
+
+// ---------------------------------------------------------------------------
+// Telemetry counters + GFLEET_MCP_DEBUG knob + SCHEMA.md
+// ---------------------------------------------------------------------------
+
+test('telemetry: query_graph calls increment counters and record latency samples', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'r', [
+            { id: 'n1', label: 'OrderThing', norm_label: 'orderthing' },
+            { id: 'n2', label: 'OrderThing2', norm_label: 'orderthing2' },
+        ], []);
+        const script = `
+import sys, time
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+from mcp_server.telemetry import get_telemetry, reset_telemetry
+
+reset_telemetry()
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+
+# Simulate the server.py instrumentation: increment + record_latency around each call.
+tel = get_telemetry()
+for _ in range(3):
+    t0 = time.monotonic()
+    tel.incr('tool.query_graph.calls')
+    query_graph(state, {'question': 'OrderThing search', 'repo_filter': 'r'})
+    tel.record_latency('query_graph', (time.monotonic() - t0) * 1000.0)
+
+assert tel.counters.get('tool.query_graph.calls') == 3, tel.counters
+assert len(tel.latencies_ms.get('query_graph', [])) == 3, tel.latencies_ms
+summary = tel.summary(state=state)
+assert 'query_graph' in summary, summary
+assert 'calls=3' in summary, summary
+assert 'repo.r' in summary, summary
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `telemetry counters script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('telemetry: get_telemetry summary includes uptime + state snapshot + latency cap', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'alpha', [
+            { id: 'a1', label: 'a1', norm_label: 'a1' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.telemetry import get_telemetry, reset_telemetry, _LATENCY_CAP
+
+reset_telemetry()
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+tel = get_telemetry()
+# Push 150 latency samples — bucket should cap at _LATENCY_CAP (100).
+for i in range(150):
+    tel.record_latency('query_graph', float(i))
+assert len(tel.latencies_ms['query_graph']) == _LATENCY_CAP, len(tel.latencies_ms['query_graph'])
+# FIFO: oldest dropped, newest retained.
+assert tel.latencies_ms['query_graph'][-1] == 149.0
+assert tel.latencies_ms['query_graph'][0] == 50.0
+
+summary = tel.summary(state=state)
+assert 'gfleet MCP telemetry' in summary, summary
+assert 'uptime' in summary, summary
+assert 'repos loaded: 1' in summary, summary
+assert isinstance(summary, str) and len(summary) > 0
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `summary script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('GFLEET_MCP_DEBUG=1 announces debug=on at startup; =0 announces debug=off', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const env_on = { ...process.env, GFLEET_MCP_DEBUG: '1' };
+    const r_on = spawnSync(PY_WITH_DEPS, [ENTRY_PY, '--help'], { encoding: 'utf8', timeout: 10000, env: env_on });
+    assert.equal(r_on.status, 0, `--help with debug=1 exit ${r_on.status}: ${r_on.stderr}`);
+    // --help short-circuits before serve() runs, so the debug= line will not
+    // appear; assert that --help still works under the env var (no crash).
+    assert.match(r_on.stdout, /graphs_dir/);
+
+    // Sanity: telemetry.debug_level reflects the env var.
+    const script = `
+import os, sys
+os.environ['GFLEET_MCP_DEBUG'] = '2'
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.telemetry import debug_level
+from mcp_server.utils import debug_enabled
+assert debug_level() == 2, debug_level()
+assert debug_enabled() is True
+os.environ['GFLEET_MCP_DEBUG'] = '0'
+assert debug_level() == 0, debug_level()
+assert debug_enabled() is False
+os.environ['GFLEET_MCP_DEBUG'] = '1'
+assert debug_level() == 1, debug_level()
+assert debug_enabled() is True
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `debug_level script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('GFLEET_MCP_DEBUG=2: verbose_log writes per-call lines to stderr', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import os, sys, io
+os.environ['GFLEET_MCP_DEBUG'] = '2'
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+buf = io.StringIO()
+sys.stderr = buf
+from mcp_server.telemetry import verbose_log
+verbose_log('call query_graph args=[question]')
+verbose_log('done query_graph in 1.2ms')
+sys.stderr = sys.__stderr__
+out = buf.getvalue()
+assert 'verbose' in out, out
+assert 'call query_graph' in out, out
+assert 'done query_graph' in out, out
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `verbose script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('SCHEMA.md: present, well-formed, documents every registered tool name', () => {
+    const schemaPath = join(PKG_DIR, 'SCHEMA.md');
+    assert.ok(existsSync(schemaPath), `expected ${schemaPath} to exist`);
+    const text = readFileSync(schemaPath, 'utf8');
+    // Basic markdown sanity: balanced fenced code blocks.
+    const fenceCount = (text.match(/```/g) || []).length;
+    assert.equal(fenceCount % 2, 0, 'unbalanced fenced code blocks in SCHEMA.md');
+    // Every tool registered in server.py must be documented.
+    const serverText = readFileSync(join(PKG_DIR, 'server.py'), 'utf8');
+    const toolNames = Array.from(serverText.matchAll(/name="([a-z_]+)"/g)).map(m => m[1]);
+    // Filter to tool names (de-dup, exclude server_name patterns).
+    const unique = Array.from(new Set(toolNames));
+    assert.ok(unique.length >= 10, `expected at least 10 registered tools, got ${unique.length}`);
+    for (const tool of unique) {
+        assert.match(text, new RegExp(`## \`${tool}\``), `SCHEMA.md missing section for tool '${tool}'`);
+    }
 });

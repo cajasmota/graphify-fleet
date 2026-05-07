@@ -20,6 +20,7 @@ from networkx.readwrite import json_graph
 from .communities import communities_for, evict_repo
 from .index import LabelIndex
 from .links_loader import build_xrepo_graph, load_links_file
+from .telemetry import get_telemetry
 from .utils import debug_log, warn
 
 
@@ -121,11 +122,13 @@ class GraphState:
             m = path.stat().st_mtime
         except OSError as exc:
             self.unavailable[tag] = f"stat failed ({exc})"
+            get_telemetry().incr(f"repo.unavailable.stat_failed")
             return
         G, reason = _load_one_graph(path)
         if G is None:
             self.unavailable[tag] = reason or "unknown error"
             debug_log(f"repo '{tag}' unavailable: {self.unavailable[tag]}")
+            get_telemetry().incr("repo.unavailable.load_failed")
             return
         # Success — clear any prior unavailable mark.
         self.unavailable.pop(tag, None)
@@ -133,6 +136,7 @@ class GraphState:
         self.mtimes[tag] = m
         self.communities[tag] = communities_for(tag, m, G)
         self.label_index.reload_repo(tag, G)
+        get_telemetry().incr(f"reload.repo.{tag}")
 
     def _reload_one_if_stale(self, tag: str, path: Path) -> None:
         try:
@@ -177,12 +181,14 @@ class GraphState:
             if G is None:
                 self.unavailable[tag] = reason or "unknown error"
                 debug_log(f"repo '{tag}' unavailable: {self.unavailable[tag]}")
+                get_telemetry().incr("repo.unavailable.load_failed")
                 continue
             self.unavailable.pop(tag, None)
             self.graphs[tag] = G
             self.mtimes[tag] = m  # type: ignore[assignment]
             self.communities[tag] = communities_for(tag, m, G)
             self.label_index.reload_repo(tag, G)
+            get_telemetry().incr(f"reload.repo.{tag}")
 
         for tag in list(self.graphs.keys()):
             if tag not in seen_tags:
@@ -228,6 +234,7 @@ class GraphState:
         _version, entries = load_links_file(self.links_path, key="links")
         self.xrepo_edges = build_xrepo_graph(entries, self._has_prefixed_node)
         self.links_mtime = m
+        get_telemetry().incr("reload.links")
 
     def _refresh_candidate_rejection_mtimes(self) -> None:
         """Stat candidates/rejections files so callers can detect changes since
@@ -250,6 +257,7 @@ class GraphState:
                 continue
             if m != getattr(self, mtime_attr):
                 setattr(self, mtime_attr, m)
+                get_telemetry().incr(f"reload.{path_attr.removesuffix('_path')}")
 
     def _has_prefixed_node(self, prefixed_id: str) -> bool:
         if "::" not in prefixed_id:
