@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const { runImportLinkPass } = await import(resolve(here, '..', 'src', 'links.js'));
+const { runImportLinkPass, runLabelLinkPass } = await import(resolve(here, '..', 'src', 'links.js'));
 
 const [, , group, graphsDirArg] = process.argv;
 if (!group) {
@@ -20,7 +20,8 @@ const graphsDir = graphsDirArg
 
 try {
     const n = runImportLinkPass(group, graphsDir);
-    console.log(`links-pass: wrote ${n} import-method links for group '${group}'`);
+    const m = runLabelLinkPass(group, graphsDir);
+    console.log(`links-pass: wrote ${n} import-method + ${m.links} label_match links (${m.candidates} candidates) for group '${group}'`);
 } catch (e) {
     console.error(`links-pass failed: ${e.message}`);
     process.exit(1);
