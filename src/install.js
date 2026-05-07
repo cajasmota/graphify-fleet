@@ -45,13 +45,14 @@ export async function install(configPath) {
             if (res.code !== 0) log.warn('initial graphify update failed (continuing)');
         }
 
-        writeMcpJson(r.path, cfg.groupGraph);
+        writeMcpJson(r.path, cfg.groupGraph, r.slug, cfg.group);
         if (cfg.options.claude_code) {
             installClaudeSkill(r.path);
-            ensureClaudeRules(r.path, cfg.group, cfg.groupGraph, cfg.repos);
-            ensureAgentsRules(r.path, cfg.group, cfg.groupGraph, cfg.repos);
+            const groupDocs = cfg.docs?.group_docs_path ?? null;
+            ensureClaudeRules(r.path, cfg.group, cfg.groupGraph, cfg.repos, groupDocs, r.slug);
+            ensureAgentsRules(r.path, cfg.group, cfg.groupGraph, cfg.repos, groupDocs, r.slug);
         }
-        if (cfg.options.windsurf)    writeWindsurfFiles(r.path, cfg.group, cfg.groupGraph, cfg.repos);
+        if (cfg.options.windsurf)    writeWindsurfFiles(r.path, cfg.group, cfg.groupGraph, cfg.repos, r.slug);
         installGitHooks(r.path, cfg.group, helper);
         if (cfg.options.watchers)    installWatcher(cfg.group, r.path, r.slug);
 
@@ -66,7 +67,7 @@ export async function install(configPath) {
 
     if (cfg.options.windsurf) {
         await ensureWindsurfSkill();
-        addWindsurfGlobalMcp(cfg.group, cfg.groupGraph);
+        addWindsurfGlobalMcp(cfg.group, cfg.groupGraph, cfg.repos);
     }
 
     registerGroup(cfg.group, configPath);

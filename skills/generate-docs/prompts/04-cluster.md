@@ -193,7 +193,11 @@ If any section truly doesn't apply (e.g. GET endpoints have no request body), om
 
 ## Concrete file templates
 
-### Module `README.md` (always)
+### Module `index.md` (always — NOT `README.md`)
+
+Each module gets `modules/<name>/index.md` (single file, single source of truth, VitePress + GitHub friendly). Same for `cross-cutting/<concern>/index.md` if a concern grows into a folder. Same for `api/index.md` and `flows/index.md` in SUBFOLDER-shaped modules.
+
+**Never write `README.md`.** Pass 3 changed the convention: every doc-folder homepage is `index.md`.
 
 ```markdown
 <!-- docs:auto -->
@@ -478,11 +482,13 @@ For 300-800 LOC, use Read with offset/limit for non-target classes.
 For >800 LOC, the plan should have already split the work — if it didn't, fix the plan and restart.
 Never read the whole graph.json — query it via specific node lookups.
 
-If you hit context budget mid-class:
+If your **context window** is filling up mid-class (degrades quality on subsequent reads/writes):
 1. **STOP** writing the current file.
 2. Mark it 🔴 INCOMPLETE per `snippets/confidence-markers.md` with the unread method names.
 3. Save what's already complete via `save-result`.
 4. Move to the next module (don't try to squeeze more into a degraded context).
+
+"Context window filling up" means: you've read enough source that further reads + writing degrade quality (you start summarising shallowly, forgetting earlier instructions, repeating yourself). On Claude Code with subagents, this is rare because each subagent gets a fresh 200k window — but if it happens to a single subagent for a single cluster, R0's per-class splitting may need even finer subdivision next time.
 
 ---
 

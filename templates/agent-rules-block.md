@@ -1,15 +1,23 @@
-## graphify (group: {{group}}, merged-graph aware)
+## graphify (group: {{group}}, two MCP servers — focused vs merged)
 
-This project is part of the **{{group}}** group. The graphify MCP server `graphify-{{group}}` exposes a **merged knowledge graph** spanning ALL repos in this group:
+This project is part of the **{{group}}** group. Two MCP servers are configured:
 
+| MCP server | Graph it serves | When to use |
+|------------|----------------|-------------|
+| `graphify-{{repo_slug}}` | this repo only | **Default for repo-local questions** — architecture, refactoring, navigation within this codebase. No cross-repo noise. |
+| `graphify-{{group}}` | merged across all {{group}} repos | **Cross-repo questions only** — "how does mobile call the backend?", "what frontend hook calls this endpoint?", end-to-end flows. |
+
+**Default choice rule**: use `graphify-{{repo_slug}}` first. Only switch to `graphify-{{group}}` when the question explicitly crosses repo boundaries.
+
+Group repos:
 {{repos_list}}
 
-Every node in the merged graph carries a `repo` field identifying its source. When you query the graph, you WILL see nodes from other repos — this is expected. Use that to trace cross-repo flows.
+Every node in the merged group graph carries a `repo` field identifying its source. When you query `graphify-{{group}}`, you WILL see nodes from other repos — that's the point. When you query `graphify-{{repo_slug}}`, you see only this repo's nodes — clean signal.
 
-**How to use the graph:**
-- Architecture / cross-repo questions → query `graphify-{{group}}` MCP first (`query_graph`, `get_neighbors`, `shortest_path`)
-- Local-repo navigation → also fine to read `graphify-out/graph.json` or `GRAPH_REPORT.md`
-- Wiki-style browsing → if `graphify-out/wiki/index.md` exists
+**How to use the graphs:**
+- Repo-local architecture / structure questions → `graphify-{{repo_slug}}` MCP first
+- Cross-repo flow tracing → `graphify-{{group}}` MCP
+- Wiki-style browsing → `graphify-out/wiki/index.md` if it exists
 - After modifying code → run `graphify update .` (the watcher does this on save)
 
 **Generated documentation:**
@@ -36,20 +44,27 @@ The graph captures imports/calls/containment via static AST. It cannot capture:
 - Implementation patterns (registry, strategy, observer)
 - Business rules (status machines, role gates, jurisdictional logic)
 
-After tracing one of these via code reads, **save the finding** so the next agent (or next session) doesn't re-discover it. The MCP server reads `graphify-out/memory/` alongside the graph, so saved results surface automatically in future `query_graph`, `get_neighbors`, `shortest_path` traversals — at zero re-compute cost.
+After tracing one of these via code reads, **save the finding** so the next agent (or next session) doesn't re-discover it. The MCP server reads memory alongside the graph, so saved results surface automatically in future `query_graph`, `get_neighbors`, `shortest_path` traversals — at zero re-compute cost.
+
+**Dual-save** (mandatory): write each save-result to BOTH the per-repo memory dir AND the group memory dir, so it's queryable from both MCPs:
 
 ```bash
+# Per-repo (visible in graphify-{{repo_slug}})
 graphify save-result \
-  --question "<exact question that was asked>" \
-  --answer   "<full verified answer>" \
-  --type     <query|path_query|explain> \
-  --nodes    "<source-node-1>" "<source-node-2>" ...
+  --question "<exact question>" --answer "<full answer>" \
+  --type <query|path_query|explain> --nodes "<n1>" "<n2>" ...
+
+# Group-visible (visible in graphify-{{group}})
+graphify save-result \
+  --memory-dir ~/.graphify/groups/{{group}}-memory/ \
+  --question "<same>" --answer "<same>" \
+  --type <same> --nodes "<same>"
 ```
 
 When to run it (mandatory):
-- After tracing any cross-repo HTTP boundary → use `--type path_query`, include both the caller and the handler node
-- After understanding an emergent behavior with no single anchor node → use `--type query`
-- After discovering an architectural pattern (registry, strategy, etc.) → use `--type explain`
+- After tracing any cross-repo HTTP boundary → `--type path_query` + dual-save
+- After understanding an emergent behavior with no single anchor node → `--type query`
+- After discovering an architectural pattern → `--type explain`
 - At session end, as standard wrap-up — for every question where code reads were needed to fill graph gaps
 
 When NOT to run it:
@@ -57,10 +72,8 @@ When NOT to run it:
 - If the answer is ephemeral / situational (won't apply to future sessions)
 - If the trace was incomplete (saving a partial finding propagates the gap)
 
-Staleness: if a saved-result references a function/file that has been significantly modified, re-trace and overwrite with a fresh `save-result` (no automatic invalidation).
-
-**Quick decision tree** for when to use which:
-- Asked a code structure question → answer from graph → done
-- Asked a behavior/intent question → answer from graph + maybe 1 file read → done
-- Asked a cross-repo question → traced via code reads → **save-result** before ending session
-- Generated docs (`/generate-docs`) → skill auto-saves discoveries during Pass 4 and Pass 7
+**Quick decision tree** for which MCP + whether to save:
+- Repo-local code structure → `graphify-{{repo_slug}}` → answer from graph → done
+- Repo-local behavior/intent → `graphify-{{repo_slug}}` → graph + 1 file read → done
+- Cross-repo question → `graphify-{{group}}` → traced via code reads → **dual-save** before ending session
+- Generated docs (`/generate-docs`) → skill auto-saves discoveries during Pass 4 and Pass 7 (dual-save)

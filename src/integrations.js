@@ -20,20 +20,39 @@ export function writeGraphifyignore(repo, stack) {
 export function updateGitignore(repo) {
     const f = join(repo, '.gitignore');
     const existing = existsSync(f) ? readFileSync(f, 'utf8') : '';
-    if (existing.includes('graphify-out/wiki/')) return;
-    const block = '\n# graphify-fleet\ngraphify-out/wiki/\ngraphify-out/manifest.json\ngraphify-out/cost.json\ngraphify-out/cache/\n';
+    if (existing.includes('# graphify-fleet')) return;
+    const block = `
+# graphify-fleet
+docs/
+graphify-out/wiki/
+graphify-out/manifest.json
+graphify-out/cost.json
+graphify-out/cache/
+`;
     writeFileSync(f, existing + block);
-    log.info('.gitignore updated');
+    log.info('.gitignore updated (docs/ + graphify-out scratch)');
 }
 
-export function writeMcpJson(repo, groupGraph) {
+export function writeMcpJson(repo, groupGraph, repoSlug, group) {
     const f = join(repo, '.mcp.json');
     const py = graphifyPython();
-    const server = { command: py, args: ['-m', 'graphify.serve', groupGraph] };
+    const repoGraph = join(repo, 'graphify-out', 'graph.json');
     const obj = existsSync(f) ? readJson(f) : { mcpServers: {} };
-    obj.mcpServers = { ...(obj.mcpServers ?? {}), graphify: server };
+    obj.mcpServers = obj.mcpServers ?? {};
+    // Per-repo MCP — focused queries, no cross-repo noise
+    obj.mcpServers[`graphify-${repoSlug}`] = {
+        command: py,
+        args: ['-m', 'graphify.serve', repoGraph],
+    };
+    // Group MCP — for explicit cross-repo questions
+    obj.mcpServers[`graphify-${group}`] = {
+        command: py,
+        args: ['-m', 'graphify.serve', groupGraph],
+    };
+    // Remove old single-key 'graphify' entry from previous gfleet versions (cleanup)
+    delete obj.mcpServers.graphify;
     writeJson(f, obj);
-    log.info(`.mcp.json: graphify -> ${groupGraph}`);
+    log.info(`.mcp.json: graphify-${repoSlug} (repo) + graphify-${group} (group)`);
 }
 
 export function installClaudeSkill(repo) {
@@ -44,11 +63,11 @@ export function installClaudeSkill(repo) {
 
 const WINDSURF_WORKFLOW_TEMPLATE = join(TEMPLATES_DIR, 'windsurf-workflow.md');
 
-export function writeWindsurfFiles(repo, group, groupGraph, allRepos = []) {
+export function writeWindsurfFiles(repo, group, groupGraph, allRepos = [], repoSlug = null) {
     const wf = join(repo, '.windsurf', 'workflows');
     ensureDir(wf);
     copyFileSync(WINDSURF_WORKFLOW_TEMPLATE, join(wf, 'graphify.md'));
-    upsertAgentRulesBlock(join(repo, '.windsurfrules'), group, groupGraph, allRepos);
+    upsertAgentRulesBlock(join(repo, '.windsurfrules'), group, groupGraph, allRepos, null, repoSlug);
     log.info('windsurf workflow + rules written');
 }
 
@@ -56,19 +75,20 @@ const RULES_TEMPLATE = join(TEMPLATES_DIR, 'agent-rules-block.md');
 const RULES_START = '<!-- gfleet:graphify-rules:start -->';
 const RULES_END   = '<!-- gfleet:graphify-rules:end -->';
 
-function buildRulesBlock(group, groupGraph, allRepos, groupDocsPath) {
+function buildRulesBlock(group, groupGraph, allRepos, groupDocsPath, repoSlug) {
     const tpl = readFileSync(RULES_TEMPLATE, 'utf8');
     const reposList = allRepos.length === 0 ? '' :
         allRepos.map(r => `- ${r.slug} (${r.stack})  ${r.path}`).join('\n');
     return tpl
         .replace(/\{\{group\}\}/g, group)
+        .replace(/\{\{repo_slug\}\}/g, repoSlug || '<this-repo>')
         .replace(/\{\{repos_list\}\}/g, reposList || `(other repos in group "${group}")`)
         .replace(/\{\{group_docs_path\}\}/g, groupDocsPath || `<group-docs-path>`);
 }
 
 // Idempotent: replaces the gfleet-managed block, preserves all other content.
-export function upsertAgentRulesBlock(rulesFile, group, groupGraph, allRepos = [], groupDocsPath = null) {
-    const block = buildRulesBlock(group, groupGraph, allRepos, groupDocsPath);
+export function upsertAgentRulesBlock(rulesFile, group, groupGraph, allRepos = [], groupDocsPath = null, repoSlug = null) {
+    const block = buildRulesBlock(group, groupGraph, allRepos, groupDocsPath, repoSlug);
     const wrapped = `\n${RULES_START}\n${block}\n${RULES_END}\n`;
 
     let cur = existsSync(rulesFile) ? readFileSync(rulesFile, 'utf8') : '';
@@ -91,11 +111,11 @@ export function upsertAgentRulesBlock(rulesFile, group, groupGraph, allRepos = [
     writeFileSync(rulesFile, cur);
 }
 
-export function ensureClaudeRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null) {
-    upsertAgentRulesBlock(join(repo, 'CLAUDE.md'), group, groupGraph, allRepos, groupDocsPath);
+export function ensureClaudeRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null, repoSlug = null) {
+    upsertAgentRulesBlock(join(repo, 'CLAUDE.md'), group, groupGraph, allRepos, groupDocsPath, repoSlug);
 }
-export function ensureAgentsRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null) {
-    upsertAgentRulesBlock(join(repo, 'AGENTS.md'), group, groupGraph, allRepos, groupDocsPath);
+export function ensureAgentsRules(repo, group, groupGraph, allRepos = [], groupDocsPath = null, repoSlug = null) {
+    upsertAgentRulesBlock(join(repo, 'AGENTS.md'), group, groupGraph, allRepos, groupDocsPath, repoSlug);
 }
 
 export function writeRemergeHelper(group, groupGraph, repos) {
@@ -214,19 +234,26 @@ const WINDSURF_MCP_PATHS = [
     join(process.env.HOME ?? '', '.codeium', 'windsurf', 'mcp_config.json'),
 ];
 
-export function addWindsurfGlobalMcp(group, groupGraph) {
-    const server = {
-        command: graphifyPython(),
-        args: ['-m', 'graphify.serve', groupGraph],
-    };
+export function addWindsurfGlobalMcp(group, groupGraph, repos = []) {
+    const py = graphifyPython();
+    const groupServer = { command: py, args: ['-m', 'graphify.serve', groupGraph] };
     for (const p of WINDSURF_MCP_PATHS) {
         ensureDir(dirname(p));
         const obj = existsSync(p) ? readJson(p) : {};
         obj.mcpServers = obj.mcpServers ?? {};
-        obj.mcpServers[`graphify-${group}`] = server;
+        // Group MCP
+        obj.mcpServers[`graphify-${group}`] = groupServer;
+        // Per-repo MCPs
+        for (const r of repos) {
+            const repoGraph = join(r.path, 'graphify-out', 'graph.json');
+            obj.mcpServers[`graphify-${r.slug}`] = {
+                command: py,
+                args: ['-m', 'graphify.serve', repoGraph],
+            };
+        }
         writeJson(p, obj);
     }
-    log.info(`windsurf MCP entry: graphify-${group} (written to ${WINDSURF_MCP_PATHS.length} paths)`);
+    log.info(`windsurf MCP: graphify-${group} (group) + ${repos.length} per-repo entries (×${WINDSURF_MCP_PATHS.length} paths)`);
 }
 
 export function removeWindsurfGlobalMcp(group) {

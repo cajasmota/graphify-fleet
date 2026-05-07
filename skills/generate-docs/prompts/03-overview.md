@@ -8,13 +8,30 @@ Two pages that together let a new contributor "get the shape" of the codebase in
 
 ## Files to produce
 
-### `docs/README.md` — TOC + map (short, ~150-300 words + diagram)
+**Note**: write **`index.md`** as the homepage (NOT `README.md`). VitePress (Pass 9) and GitHub both render `index.md` as the folder default. This is a single source of truth — eliminates the README/index duplication that broke cross-links in earlier runs.
+
+### `docs/index.md` — TOC + map (short, ~150-300 words + diagram)
 
 Required sections:
 
 ```markdown
 <!-- docs:auto -->
-# <Repo display name> — Documentation
+---
+layout: home
+hero:
+  name: "<Repo display name>"
+  tagline: "<one-line description from docs-config.json>"
+  actions:
+    - theme: brand
+      text: Read the overview
+      link: /overview
+    - theme: alt
+      text: Browse modules
+      link: /modules/
+    - theme: alt
+      text: Reference
+      link: /reference/
+---
 
 <!-- auto:start id=intro -->
 1-paragraph: what this repo is + how it fits in the group.

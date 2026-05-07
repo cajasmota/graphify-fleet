@@ -87,42 +87,14 @@ Minimal stub (don't merge with the repo's main package.json — keep docs deps i
 
 ### `<docs-root>/index.md`
 
-VitePress prefers `index.md` as homepage. The skill already wrote `README.md`. Create `index.md` as a hero-page wrapper that links to the README content — or symlink-equivalent:
+**Pass 3 already wrote this** with the VitePress hero frontmatter. Pass 9 should NOT overwrite it. Just verify:
+- `index.md` exists at the docs root
+- Has `layout: home` + `hero:` frontmatter
+- Has the doc-map section in `<!-- auto:* -->` blocks
 
-```markdown
----
-layout: home
+If for some reason `index.md` is missing (older run), generate it per the template in Pass 3.
 
-hero:
-  name: "<Repo display name>"
-  tagline: "<one-line tagline from docs-config.json>"
-  actions:
-    - theme: brand
-      text: Read the overview
-      link: /overview
-    - theme: alt
-      text: Browse modules
-      link: /modules/
-    - theme: alt
-      text: Reference
-      link: /reference/
-
-features:
-  - title: Architecture
-    details: Module-by-module deep dives with mermaid diagrams.
-    link: /overview
-  - title: API
-    details: Every endpoint, every action. Full params, errors, side effects.
-    link: /modules/
-  - title: Cross-cutting
-    details: Auth, permissions, logging — concerns that span modules.
-    link: /cross-cutting/
----
-
-<!-- The full doc map is in [README](./README) -->
-```
-
-Don't overwrite the existing README.md. VitePress reads both — this just gives a nicer landing page.
+**Do NOT also create `README.md`.** Only one homepage file. Internal cross-links should point at folders (e.g. `/modules/`) or specific pages (e.g. `/overview`), never `README.md`. This prevents the broken-link issue from earlier runs.
 
 ## Sidebar generation logic
 

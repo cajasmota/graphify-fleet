@@ -9,6 +9,16 @@ Markdown relative path:
 
 Always use relative paths so docs work both on GitHub and after directory moves.
 
+**Never link to `README.md`** — the skill no longer writes README.md; the homepage is `index.md` (with VitePress hero frontmatter). For "the docs homepage" link, use the folder reference:
+
+✓ `[home](../../)` or `[home](../../index.md)` or simply `[home](/)`
+✗ `[home](../../README.md)`
+
+For module homepages, link to `index.md` if it exists, else to the folder:
+
+✓ `[inspections](../inspections/index.md)` or `[inspections](../inspections/)`
+✗ `[inspections](../inspections/README.md)`
+
 ## Cross-repo (within a group)
 
 Resolve via the gfleet registry. Format:
