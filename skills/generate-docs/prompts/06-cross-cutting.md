@@ -2,6 +2,31 @@
 
 Concerns that span multiple modules within this repo. Document once, link from each module.
 
+## Canonical page template
+
+The page format for every `docs/cross-cutting/<concern>.md` file is defined by the canonical output-template:
+
+**`~/.claude/skills/generate-docs/output-templates/cross-cutting.md`**
+
+That file is the source of truth for section order, anchor IDs, callout style, and the auto-region structure. The example below in this prompt shows a populated instance for orientation, but the canonical template wins on any conflict.
+
+Important rules pulled from the template (do not violate):
+
+- "How it works" / "How it's used" sections are PLAIN PROSE. Do NOT use annotated code blocks — i.e. no code fences with inline `# this does X` comments walking through logic. A short verbatim snippet plus a source link is fine; an "explained code" block is not.
+- Every concrete code reference uses a relative source link (e.g. `[`core/permissions/base.py:42`](../../core/permissions/base.py#L42)`); the link IS the explanation, so don't duplicate it as comments.
+- Consumer tables list one row per module, not per call site.
+
+## Orchestration model
+
+On **Claude Code**, the orchestrator delegates each `cross-cutting/<concern>.md` write to a subagent (per `SKILL.md`'s coordinator-only rule). Hand the subagent:
+
+1. This prompt (`prompts/06-cross-cutting.md`).
+2. The canonical template at `~/.claude/skills/generate-docs/output-templates/cross-cutting.md`.
+3. The snippet bundle for that concern (primary implementation files + the per-module call sites discovered in pass 4).
+4. The list of modules confirmed to use this concern, so the subagent can both fill the consumer table here AND know which per-module stub files (Pass 4 outputs) need their stubs aligned.
+
+The subagent reads the prompt + template + snippets BEFORE writing. The orchestrator itself writes nothing. On **Windsurf**, the running agent writes directly.
+
 ## Files
 
 For each cross-cutting concern in the inventory, write `docs/cross-cutting/<concern>.md`.
@@ -16,7 +41,9 @@ Common concerns:
 - `theming.md` — frontend/mobile theming
 - `i18n.md` — localization
 
-## Format
+## Format (illustrative example — see canonical template for full structure)
+
+The block below is an example of a populated `permissions.md`. Use it for orientation only; the authoritative section list, anchor IDs, and ordering live in `~/.claude/skills/generate-docs/output-templates/cross-cutting.md`.
 
 ```markdown
 <!-- docs:auto -->
@@ -115,8 +142,8 @@ The cross-cutting doc has the patterns and the consumer table; the per-module st
 
 ## Idempotence + metadata
 
-Same rules. Update `.metadata.json`.
+Strip and respect `<!-- docs:manual -->` / `<!-- docs:auto -->` regions and any human-edited content outside auto-islands (same convention as passes 4 and 5). Re-runs must regenerate only the auto-regions and then update `docs/.metadata.json` with the new file hashes and the snippet-bundle version they were generated from.
 
 ## After completion
 
-Proceed to `prompts/08-cross-link.md` (skip 07 if not running in `--group` mode).
+If running in `--group` mode, proceed to `prompts/07-group-synthesis.md`. Otherwise skip directly to `prompts/08-cross-link.md`.

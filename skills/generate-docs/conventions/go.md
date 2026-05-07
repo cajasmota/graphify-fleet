@@ -9,40 +9,43 @@ Discovery:
 
 ## Canonical artifact files
 
-| Artifact | File | Threshold | Source patterns |
-|----------|------|-----------|-----------------|
-| handlers | `handlers.md` | ≥3 handlers | files importing `net/http` and registering routes |
-| domain | `domain.md` | ≥2 domain types | `domain.go`, `model.go`, `*Service.go`, business logic |
-| storage | `storage.md` | ≥1 repo/store | `*Repository.go`, `*Store.go`, `*Repo.go` |
-| transport | `transport.md` | gRPC/messaging | `*.proto`, kafka/sqs publishers |
-| dependencies | `dependencies.md` | always | external services this calls |
-| config | `config.md` | env-loaded | `viper`, `envconfig` use |
-| flows | `flows.md` | ≥2 services collaborate | derived |
+Each module folder's homepage is `index.md` (NOT `README.md`). Below-threshold artifacts fold into `index.md`.
+
+| Artifact | File | Template | Threshold | Source patterns |
+|----------|------|----------|-----------|-----------------|
+| handlers (HTTP API) | `handlers.md` | `output-templates/api-class.md` (Swagger-card) | ≥3 handlers | files importing `net/http` and registering routes |
+| domain | `services.md` | `output-templates/services.md` | ≥2 domain types | `domain.go`, `model.go`, `*Service.go`, business logic |
+| storage | `services.md` (storage section) or `cross-cutting.md` | `output-templates/services.md` | ≥1 repo/store | `*Repository.go`, `*Store.go`, `*Repo.go` |
+| transport (gRPC, pubsub) | `cross-cutting.md` | `output-templates/cross-cutting.md` | gRPC/messaging | `*.proto`, kafka/sqs publishers |
+| dependencies | `index.md` section | — | always | external services this calls |
+| config | `cross-cutting.md` | `output-templates/cross-cutting.md` | env-loaded | `viper`, `envconfig` use |
+| flows | `user-journey.md` | `output-templates/user-journey.md` | ≥2 services collaborate | derived |
 
 ## Per-artifact rules
 
-### `handlers.md`
-- One H3 per route or handler function.
-- Per route: method, path, middleware, handler func, request body type, response type, status codes.
-- Note `chi.Router` group structure if used.
+### `handlers.md` — Swagger-card format (use `output-templates/api-class.md`)
+- Go HTTP handlers play the same role as Django ViewSets — the same Swagger-card template applies.
+- One H3 per route or handler function, formatted as a Swagger-style card.
+- Method emoji prefix in the H3: 🟢 GET, 🟡 POST, 🔵 PUT/PATCH, 🟣 DELETE, 🔴 destructive/admin.
+- Each card uses collapsible `<details>` sections for: Parameters, Request body, Responses, Errors.
+- Per route metadata: method, path, middleware, handler func, request body type, response type, status codes.
+- "How it works" subsection (when present) is PLAIN PROSE — never annotated code blocks. Describe in sentences what the handler does, what it validates, which service it calls, and how it handles errors.
+- Note `chi.Router` (or gorilla/mux/echo/gin) group structure once at top of the file.
+- **Cross-repo link** to upstream frontend caller (mandatory when the merged graph has the link).
+- Override vs template: api-class.md defines the card structure; Go handlers add the router-group note at the top and the cross-repo link inside each card.
 
-### `domain.md`
+### `services.md` (domain + business logic, use `output-templates/services.md`)
 - Domain types (struct definitions) with field meanings.
-- Service-level functions (business logic).
-- Per significant function: 1-3 paragraphs, mermaid for orchestration.
+- Service-level functions (business logic) — one H3 per public function.
+- Per significant function: 1-3 paragraphs of plain prose, mermaid for orchestration involving ≥3 collaborators.
 - Note interface boundaries — what's exported, what's internal.
+- Storage repos can live in this file under a "Storage" H2, or break out into `cross-cutting.md` if the module has many repos. One H3 per repository/store: methods, what query each runs, what it returns. Walk through complex SQL in PLAIN PROSE — never annotated code. Note transaction boundaries.
 
-### `storage.md`
-- One H3 per repository/store.
-- Methods: signature, what query it runs, what it returns.
-- For complex queries: walk through the SQL.
-- Note transaction boundaries.
-
-### `transport.md`
+### Transport (gRPC, pubsub) → `cross-cutting.md`
 - gRPC: list services and methods from `.proto` files. Note streaming vs unary.
 - Pub/sub: what topics/queues this service publishes to / consumes from. Message schemas.
 
-### `dependencies.md`
+### Dependencies → `index.md` section
 - External services this one talks to (other internal services, third parties).
 - For each: what it's used for, failure mode, timeout/retry policy.
 

@@ -2,6 +2,16 @@
 
 Final pass. Walks all newly-written docs, verifies cross-links, fixes anchors.
 
+## Orchestration model
+
+On **Claude Code**, the orchestrator delegates this pass to a single subagent (per the `SKILL.md` coordinator-only rule). The subagent should be given:
+
+- This prompt (`prompts/08-cross-link.md`).
+- The list of all per-repo `docs/` trees touched by passes 4–6 plus, in `--group` mode, the `<group_docs_path>/` tree from pass 7.
+- The agent rules block from `CLAUDE.md` (so the subagent honors `<!-- docs:manual -->` regions and the homepage convention while rewriting links).
+
+No `output-templates/*` are needed for this pass — it edits existing files in place rather than producing new artifacts. On **Windsurf**, the agent runs the steps below directly.
+
 ## Your goal
 
 For every link in every doc you just wrote:
@@ -27,7 +37,7 @@ Extract every markdown link `[text](path#anchor)`. Skip:
 
 For each link `<text>(<rel-path>#<anchor>)`:
 
-1. Resolve `<rel-path>` from current doc dir → absolute file path.
+1. Resolve `<rel-path>` from current doc dir → absolute file path. If the path points at a directory, resolve it to `<dir>/index.md` (VitePress homepage convention; do NOT fall back to `README.md`). If a legacy link points at `<dir>/README.md` and only `<dir>/index.md` exists, rewrite the link to `<dir>/index.md` or to the bare directory.
 2. If file doesn't exist:
    - Replace the link with: `<text>` (plain text, no link)
    - Add entry to `<group_docs>/broken-links.md`: `- <source_doc>:<line> → <target> NOT FOUND`

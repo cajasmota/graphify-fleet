@@ -23,11 +23,11 @@
 |---------|---------------|
 | Module README summary | 1 sentence |
 | Module README key-type description | 1 paragraph (3-5 sentences) |
-| Endpoint description (the prose before "Auth:") | 1-3 sentences (longer if non-trivial behaviour) |
-| Service method body | 1-3 paragraphs |
-| Complex query walkthrough | 1 short paragraph + annotated code + 1 paragraph "why this shape" |
+| Endpoint "How it works" (Swagger card prose) | 1-3 sentences of plain prose (longer if non-trivial behaviour); never annotated code |
+| Service method body | 1-3 paragraphs of plain prose; never annotated code |
+| Complex query walkthrough | 1 short paragraph naming the query + 1 paragraph explaining what it returns and why this shape — all plain prose, no inline-commented SQL |
 | Flow doc step-by-step | one bullet per step, 1 sentence each |
-| Cross-cutting pattern explanation | 1-2 paragraphs + code snippet |
+| Cross-cutting pattern explanation | 1-2 paragraphs of prose; a short code snippet is allowed only as a usage example, never as the explanation itself |
 
 Resist padding. If you have 1 sentence of meaningful content, write 1 sentence — don't expand to fill space.
 
@@ -68,6 +68,8 @@ Diagram name labels should match the canonical names used in code (the actual cl
 - ❌ "Etc." in lists — list everything or end with the most important + "(and N more — see <link>)"
 - ❌ Marketing language: "robust", "powerful", "flexible", "elegant" — describe what it does, not how good it is
 - ❌ "Easy", "simple", "just" — patronising and usually wrong
+- ❌ Annotated code blocks as the explanation. NEVER paste code with `# this does X`, `// here we Y` inline comments to explain how something works. "How it works", service walkthroughs, query explanations, and orchestration descriptions MUST be plain prose. Code blocks are allowed as references (a short snippet showing usage, a type definition, a request/response example) but never as the carrier of the explanation.
+- ❌ Linking to another file with "same as X", "see X for details", "similar to Y" when the reader needs the information here — restate it briefly. Cross-links are for going deeper, not for substituting the basic answer.
 
 ## What TO write
 

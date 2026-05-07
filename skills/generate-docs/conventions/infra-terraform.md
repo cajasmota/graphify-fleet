@@ -10,15 +10,19 @@ Infra is organized differently — by **resource type** + **environment** rather
 
 ## Folder structure (override the default doc layout)
 
+Every folder's homepage is `index.md` (NOT `README.md`).
+
 ```
 docs/
-├── README.md
+├── index.md                # repo homepage
 ├── overview.md             # system diagram, naming conventions
 ├── environments/
+│   ├── index.md
 │   ├── dev.md
 │   ├── staging.md
 │   └── production.md
 ├── components/             # logical groupings of resources
+│   ├── index.md
 │   ├── networking.md
 │   ├── compute.md
 │   ├── storage.md
@@ -27,22 +31,26 @@ docs/
 │   ├── observability.md
 │   └── secrets.md
 ├── modules/                # if using TF modules
+│   ├── index.md
 │   └── <module>.md
 ├── reference/
+│   ├── index.md
 │   ├── variables.md
 │   ├── outputs.md
 │   └── policies.md
 └── runbooks/
+    ├── index.md
     └── <procedure>.md      # ops procedures, only if found
 ```
 
-## Per-component docs
+## Per-component docs (use `output-templates/infra-component.md`)
 
-Group resources by AWS service category (or whatever cloud). Per component:
-- What resources exist and what they're for
-- Key configuration (sizes, classes, retention)
-- Cross-references (which app uses this DB, which subnet hosts this service)
-- 🟡 anywhere config doesn't follow naming convention
+Each `components/<name>.md` follows `output-templates/infra-component.md`. Group resources by cloud-service category (networking, compute, storage, databases, messaging, observability, secrets). Per component file:
+- What resources exist and what they're for (one H2 per resource type or named cluster)
+- Key configuration (sizes, classes, retention, replication)
+- Cross-references — which app module uses this DB, which subnet hosts this service, which secret feeds which container
+- Naming convention check — 🟡 anywhere config doesn't follow the repo's convention
+- Override vs template: infra-component.md defines the section order (Purpose → Resources → Configuration → Consumers → Operations); Terraform-specific overrides add the `tfvars`-derived sizing column to the Configuration table.
 
 ## Per-environment docs
 

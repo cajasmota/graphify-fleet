@@ -66,18 +66,44 @@ Per group, gfleet maintains:
 
 ## Install
 
+### One-line install (recommended)
+
+**macOS / Linux**:
 ```bash
-# Clone graphify-fleet
-git clone https://github.com/<you>/graphify-fleet.git ~/.graphify-fleet
+curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.sh | bash
+```
+
+**Windows (PowerShell)**:
+```powershell
+irm https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.ps1 | iex
+```
+
+The installer:
+1. Verifies prerequisites (git, Node 18.19+, uv, Python 3.10+) — installs missing ones (Node via fnm on macOS/Linux or winget on Windows; uv via the official Astral installer)
+2. Clones graphify-fleet to `~/.graphify-fleet`
+3. Runs `npm install`
+4. Creates a `gfleet` shim on PATH (`~/.local/bin/gfleet` or `gfleet.cmd` on Windows)
+5. Runs `gfleet doctor` to verify
+6. Prints next steps
+
+Re-run the same command later to update — it's idempotent.
+
+### Manual install (if you prefer)
+
+```bash
+git clone https://github.com/safishamsi/graphify-fleet.git ~/.graphify-fleet
 cd ~/.graphify-fleet
 npm install
-
-# Symlink the CLI onto PATH (macOS / Linux)
-ln -s ~/.graphify-fleet/bin/gfleet ~/.local/bin/gfleet
-# or for Windows: add bin/ to PATH
-
-# Verify
+ln -s ~/.graphify-fleet/bin/gfleet ~/.local/bin/gfleet     # macOS / Linux
+# Windows PowerShell: add bin\ to user PATH manually
 gfleet doctor
+```
+
+### Custom install location
+
+```bash
+# bash
+curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.sh | bash -s -- --dir ~/tools/gfleet --branch dev
 ```
 
 `gfleet doctor` will tell you if anything's missing (uv, Python, the graphify install, the local patch) and offer a remediation hint.

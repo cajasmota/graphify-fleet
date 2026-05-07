@@ -6,6 +6,20 @@ Run only in `--group` mode, and only after per-repo docs exist for all repos in 
 
 Write the **business-oriented, narrative** documentation at the group level. Same care as per-repo, but the scope is the product, not any single codebase.
 
+## Orchestration model
+
+On **Claude Code**, the orchestrator coordinates only — every page in this pass is delegated to a subagent (see `SKILL.md`'s coordinator-only rule). Each subagent must read, before writing:
+
+- This prompt (`prompts/07-group-synthesis.md`).
+- For user-journey pages: the canonical template at `~/.claude/skills/generate-docs/output-templates/user-journey.md` (authoritative for journey doc structure).
+- The relevant slice of the merged graph + per-repo `docs/.inventory.json` files + `docs-config.json`.
+
+For non-journey pages in this pass (`system-overview.md`, `glossary.md`, `api-contracts.md` / `api-orders.md`, ADR scaffolding, etc.) the inline templates in this prompt are the source of truth — they're one-off page shapes, not covered by the shared output-templates.
+
+On **Windsurf**, the agent writes directly with no delegation.
+
+In both harnesses: "How it works" / "End-to-end flow" prose MUST be plain prose (and/or mermaid diagrams). Do NOT generate annotated code blocks that walk through logic with `# comments` — link to the source instead.
+
 Reads from:
 - The merged graph at `~/.graphify/groups/<group>.json`
 - Each repo's `docs/.inventory.json` (to know what's documented per repo)
@@ -18,14 +32,14 @@ Writes to: `<group_docs_path>` (from `docs-config.json`).
 
 ```
 <group_docs_path>/
-├── README.md                          # product 1-pager + doc map
+├── index.md                           # product 1-pager + doc map (VitePress homepage; NOT README.md)
 ├── product/
 │   ├── overview.md                    # what the product does, narrative
 │   ├── personas.md                    # primary users, use cases
 │   ├── glossary.md                    # unified domain vocabulary
 │   └── user-journeys/
-│       ├── README.md
-│       ├── <journey-1>.md             # one per discovered user journey
+│       ├── index.md                   # journey index (VitePress homepage convention)
+│       ├── <journey-1>.md             # one per discovered user journey — uses output-templates/user-journey.md
 │       └── ...
 ├── architecture/
 │   ├── system-overview.md             # high-level diagram, repo roles
@@ -42,10 +56,12 @@ Writes to: `<group_docs_path>` (from `docs-config.json`).
 ├── services/                          # only if any repo is microservices style
 │   └── <service-name>/...
 └── decisions/
-    ├── README.md                      # ADR pattern explanation
+    ├── index.md                       # ADR pattern explanation (VitePress homepage)
     ├── template.md                    # blank ADR template
     └── _suggestions.md                # 🟡 unusual patterns worth ADR'ing
 ```
+
+> Note: VitePress is the default static site (Pass 9). Across all generated trees, the homepage convention is `index.md` — never `README.md`. If a legacy `README.md` exists at any of these paths from an older run, replace with `index.md` on regeneration.
 
 ## How to discover user journeys
 
@@ -55,7 +71,17 @@ A user journey crosses repos. Detection heuristic:
 2. For each such cluster, the entry point is usually a frontend page or mobile screen (`Login`, `CreateInspection`, `Dashboard`).
 3. Trace the flow: page → hook → API endpoint → backend handler → service → DB → response → state update → UI render.
 
-Write each as a sequence diagram in mermaid plus prose.
+## User-journey page format
+
+Every `<group_docs_path>/product/user-journeys/<journey>.md` MUST follow the canonical template:
+
+**`~/.claude/skills/generate-docs/output-templates/user-journey.md`**
+
+That template defines the section order, anchor IDs, the actors / flow / touchpoints / domain-rules / failure-modes structure, and the mermaid sequence-diagram conventions. The example below in this prompt is illustrative — for any structural question, the canonical template is authoritative.
+
+Subagents writing journey pages on Claude Code must load the template first.
+
+The example block that follows (a populated "Order lifecycle" journey) is provided for orientation only.
 
 ```markdown
 <!-- docs:auto -->
@@ -223,7 +249,7 @@ All endpoints exposed by `myapp-backend`. Auth: Token unless noted.
 
 Useful for discovering orphaned endpoints (no caller) and understanding the surface.
 
-## `decisions/README.md` (ADR pattern)
+## `decisions/index.md` (ADR pattern)
 
 ```markdown
 <!-- docs:manual -->
@@ -327,7 +353,7 @@ Track count for the run summary.
 
 ## Idempotence + metadata
 
-Same rules. The group-level `.metadata.json` lives at `<group_docs_path>/.metadata.json`.
+Apply the same idempotence rules as the per-repo passes: preserve `<!-- docs:manual -->` blocks and human-edited regions verbatim, regenerate only `auto:start`/`auto:end` islands, replace any legacy `README.md` homepage with `index.md`, and update `<group_docs_path>/.metadata.json` with new file hashes + the merged-graph version used.
 
 ## After completion
 

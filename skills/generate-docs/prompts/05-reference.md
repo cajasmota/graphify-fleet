@@ -2,6 +2,19 @@
 
 Repo-wide reference docs that aren't per-module.
 
+## Orchestration model
+
+On **Claude Code**, the orchestrator running this skill is coordinator-only (per `SKILL.md`): it MUST delegate the actual writing of each file in this pass to a subagent. The subagent should be given:
+
+- This prompt file (`prompts/05-reference.md`).
+- The relevant snippet bundle for the repo (env files, `package.json`, `manage.py`, CI configs, dep files).
+- Read-access to `~/.claude/skills/generate-docs/output-templates/` — though note: the four pages in this pass (`config.md`, `scripts.md`, `deployment.md`, `dependencies.md`) use the inline templates below; they are not covered by the shared output-templates (which are reserved for per-module + cross-cutting + user-journey artifacts).
+- The repo's `docs/.inventory.json` plus the existing `docs/reference/*` files (for idempotent re-runs).
+
+On **Windsurf**, the agent writes files directly — no delegation step.
+
+In either harness, treat each page below as a separately-decidable artifact: produce only the ones whose source items exist (per the plan).
+
 ## Files
 
 Produce only the ones whose source items exist (per the plan):
@@ -214,12 +227,14 @@ Generate `docs/how-to/local-dev.md` always (synthesize from existing README setu
 
 For each non-trivial task mentioned in README/CONTRIBUTING (running tests, regenerating openapi, building APK, releasing), generate a `docs/how-to/<task>.md`.
 
-Be concise — how-to docs should be runnable steps, not theory.
+Be concise — how-to docs should be runnable steps, not theory. Any "how it works" prose in these pages MUST be plain prose; do NOT use annotated code blocks (lines like `# this does X` walking through logic) — a source link is sufficient.
+
+On **Claude Code**, the same coordinator-only rule applies to how-to pages: the orchestrator delegates each `how-to/<task>.md` write to a subagent. Hand the subagent this prompt plus the relevant README / CONTRIBUTING / tooling snippets. The how-to pages don't have a shared output-template — the inline guidance above ("runnable steps, not theory") is the contract.
 
 ## Idempotence
 
-Same as pass 4 — strip and respect `<!-- docs:manual -->` / `<!-- docs:auto -->` / human regions. Update `.metadata.json`.
+Strip and respect `<!-- docs:manual -->` / `<!-- docs:auto -->` / human regions, exactly as in pass 4: parse existing files, preserve manual blocks and human-edited regions verbatim, regenerate only the `auto:start`/`auto:end` islands, then update `docs/.metadata.json` with the new file hashes and source-snippet versions.
 
 ## After completion
 
-Print one line per file written. Proceed to `prompts/06-cross-cutting.md`.
+Print one line per file written (on Claude Code, the orchestrator collects this from each subagent's return value). Proceed to `prompts/06-cross-cutting.md`.

@@ -1,6 +1,8 @@
 # Auto/human marker rules
 
-Every generated `.md` file uses HTML-comment markers to separate auto-generated regions from human-edited regions, so re-runs preserve human work.
+Every generated `.md` file (including each module's `index.md` homepage — never `README.md`) uses HTML-comment markers to separate auto-generated regions from human-edited regions, so re-runs preserve human work.
+
+The skill must preserve human edits across re-runs. Anything inside a `<!-- human:start -->` / `<!-- human:end -->` block, anything in a file marked `<!-- docs:manual -->`, and any untagged prose between auto blocks is treated as human-owned and is never overwritten.
 
 ## File-level markers (top of file)
 
@@ -33,6 +35,26 @@ If neither marker is present, treat as `docs:auto`.
 `id` on auto regions is required and stable across runs (e.g. `endpoints`, `key-concepts`). Skill uses it to match old/new content.
 
 `id` on human regions is optional but helps if the surrounding auto structure changes.
+
+Example for a module homepage (`docs/modules/orders/index.md`):
+
+```markdown
+<!-- docs:auto -->
+# Orders
+
+<!-- auto:start id=summary -->
+Owns the order lifecycle from scheduling through result publication.
+<!-- auto:end -->
+
+<!-- human:start id=team-notes -->
+## Team notes
+We currently rewrite the assignment service — see linked ADR.
+<!-- human:end -->
+
+<!-- auto:start id=key-types -->
+...
+<!-- auto:end -->
+```
 
 ## Re-run procedure
 
