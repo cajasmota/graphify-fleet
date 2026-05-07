@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-REPO_URL="${GFLEET_REPO_URL:-https://github.com/safishamsi/graphify-fleet.git}"
+REPO_URL="${GFLEET_REPO_URL:-https://github.com/cajasmota/graphify-fleet.git}"
 INSTALL_DIR="${GFLEET_INSTALL_DIR:-$HOME/.graphify-fleet}"
 BIN_DIR="${GFLEET_BIN_DIR:-$HOME/.local/bin}"
 BRANCH="main"
@@ -235,7 +235,7 @@ say "      cd <some-cloned-repo>"
 say "      gfleet onboard"
 say ""
 say "  • Update later:"
-say "      curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.sh | bash"
+say "      curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.sh | bash"
 say "      (the script handles updates idempotently)"
 say ""
 say "Docs: $INSTALL_DIR/README.md"

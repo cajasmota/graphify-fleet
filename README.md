@@ -70,12 +70,12 @@ Per group, gfleet maintains:
 
 **macOS / Linux**:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.sh | bash
 ```
 
 **Windows (PowerShell)**:
 ```powershell
-irm https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1 | iex
 ```
 
 The installer:
@@ -91,7 +91,7 @@ Re-run the same command later to update — it's idempotent.
 ### Manual install (if you prefer)
 
 ```bash
-git clone https://github.com/safishamsi/graphify-fleet.git ~/.graphify-fleet
+git clone https://github.com/cajasmota/graphify-fleet.git ~/.graphify-fleet
 cd ~/.graphify-fleet
 npm install
 ln -s ~/.graphify-fleet/bin/gfleet ~/.local/bin/gfleet     # macOS / Linux
@@ -103,7 +103,7 @@ gfleet doctor
 
 ```bash
 # bash
-curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.sh | bash -s -- --dir ~/tools/gfleet --branch dev
+curl -fsSL https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.sh | bash -s -- --dir ~/tools/gfleet --branch dev
 ```
 
 `gfleet doctor` will tell you if anything's missing (uv, Python, the graphify install, the local patch) and offer a remediation hint.

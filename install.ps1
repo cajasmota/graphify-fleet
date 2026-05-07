@@ -1,11 +1,11 @@
 # graphify-fleet installer — one-line install (Windows / PowerShell)
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1 | iex
 #
 # Or with options:
 #   $args = @{ Branch = 'main' }
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.ps1))) @args
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1))) @args
 #
 # What it does:
 #   1. Verifies prerequisites (git, node 18.19+, uv, python 3.10+) and installs missing ones via winget when possible
@@ -19,7 +19,7 @@
 [CmdletBinding()]
 param(
     [string]$Branch = 'main',
-    [string]$RepoUrl = 'https://github.com/safishamsi/graphify-fleet.git',
+    [string]$RepoUrl = 'https://github.com/cajasmota/graphify-fleet.git',
     [string]$InstallDir = (Join-Path $env:USERPROFILE '.graphify-fleet'),
     [string]$BinDir = (Join-Path $env:USERPROFILE '.local\bin')
 )
@@ -211,6 +211,6 @@ Say '      cd <some-cloned-repo>'
 Say '      gfleet onboard'
 Say ''
 Say '  • Update later:'
-Say '      irm https://raw.githubusercontent.com/safishamsi/graphify-fleet/main/install.ps1 | iex'
+Say '      irm https://raw.githubusercontent.com/cajasmota/graphify-fleet/main/install.ps1 | iex'
 Say ''
 Say "Docs: $InstallDir\README.md"

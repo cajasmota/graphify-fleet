@@ -65,7 +65,7 @@ function discoverGitRepos(parent) {
 async function chooseRepos_Discover() {
     const parent = await ask(() => text({
         message: 'Parent folder containing the repos',
-        placeholder: '~/Documents/Projects/UpVate',
+        placeholder: '~/Code/myapp',
         validate: v => {
             const abs = expandPath(cleanPath(v ?? ''));
             if (!abs) return 'required';
