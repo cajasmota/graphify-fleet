@@ -29,7 +29,7 @@ from .state import GraphState
 from .utils import _filter_blank_stdin
 
 
-def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path]) -> None:
+def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], candidates_path: Optional[Path] = None, rejections_path: Optional[Path] = None) -> None:
     try:
         from mcp.server import Server
         from mcp.server.stdio import stdio_server
@@ -37,7 +37,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path]) ->
     except ImportError as e:
         raise ImportError("mcp not installed. Run: pip install mcp") from e
 
-    state = GraphState(graphs_dir, links_path)
+    state = GraphState(graphs_dir, links_path, candidates_path, rejections_path)
     state.initial_load()
     print(
         f"loaded {len(state.graphs)} repo graphs from {graphs_dir}"
@@ -148,6 +148,33 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path]) ->
                 },
             ),
             types.Tool(
+                name="list_link_candidates",
+                description="List entries from `<group>-link-candidates.json`, filtered by repo/channel/method and sorted by confidence desc then discovered_at asc. Returns {total, shown, candidates}.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "repo_filter": {"type": "string", "description": "Restrict to candidates whose source OR target has this repo prefix."},
+                        "channel": {"type": "string", "description": "Exact channel match (e.g. 'http', 'redis_key')."},
+                        "method": {"type": "string", "description": "Exact method match (e.g. 'label_match', 'string')."},
+                        "limit": {"type": "integer", "default": 20},
+                    },
+                },
+            ),
+            types.Tool(
+                name="resolve_link_candidate",
+                description="Resolve a candidate by id. `confirm` promotes it to <group>-links.json with method+'+resolved' and confidence 1.0; `reject` moves it to <group>-link-rejections.json so future link passes skip it.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {"type": "string", "description": "The candidate's id field (sha8 of source→target:method)."},
+                        "decision": {"type": "string", "enum": ["confirm", "reject"]},
+                        "reason": {"type": "string"},
+                        "override_target": {"type": "string", "description": "On confirm, replace the candidate's target with this value before promoting."},
+                    },
+                    "required": ["candidate_id", "decision"],
+                },
+            ),
+            types.Tool(
                 name="save_result",
                 description="Persist a question/answer pair (and the supporting node IDs) so the agent can refer back to it later. Writes to ~/.graphify/groups/<group>-memory/<timestamp>-<sha8>.json. Returns the absolute path.",
                 inputSchema={
@@ -174,6 +201,8 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path]) ->
         "graph_stats": lambda args: _tools.graph_stats(state, args),
         "shortest_path": lambda args: _tools.shortest_path(state, args),
         "save_result": lambda args: _tools.save_result(state, args, group=group),
+        "list_link_candidates": lambda args: _tools.list_link_candidates(state, args),
+        "resolve_link_candidate": lambda args: _tools.resolve_link_candidate(state, args),
     }
 
     @server.call_tool()
@@ -205,6 +234,20 @@ def _resolve_links_path(graphs_dir: Path, group: Optional[str]) -> Optional[Path
     return home / ".graphify" / "groups" / f"{group}-links.json"
 
 
+def _resolve_candidates_path(group: Optional[str]) -> Optional[Path]:
+    if not group:
+        return None
+    home = Path(os.path.expanduser("~"))
+    return home / ".graphify" / "groups" / f"{group}-link-candidates.json"
+
+
+def _resolve_rejections_path(group: Optional[str]) -> Optional[Path]:
+    if not group:
+        return None
+    home = Path(os.path.expanduser("~"))
+    return home / ".graphify" / "groups" / f"{group}-link-rejections.json"
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="mcp_server", description="gfleet MCP stdio server (per-repo graphs + cross-repo link overlay)")
     p.add_argument("graphs_dir", help="Directory containing per-repo <slug>.json graph files (typically symlinks)")
@@ -225,7 +268,9 @@ def main_cli(argv: Optional[list[str]] = None) -> None:
         if parent.name and parent.parent.name == "groups":
             group = parent.name
     links_path = _resolve_links_path(graphs_dir, group)
-    serve(graphs_dir, group, links_path)
+    candidates_path = _resolve_candidates_path(group)
+    rejections_path = _resolve_rejections_path(group)
+    serve(graphs_dir, group, links_path, candidates_path, rejections_path)
 
 
 if __name__ == "__main__":

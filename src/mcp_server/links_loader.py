@@ -24,9 +24,14 @@
 # schema. This loader is tolerant: a malformed individual entry is skipped
 # (debug-logged) and the remaining valid entries are served. An unparseable
 # JSON file produces an empty overlay.
+#
+# Candidate `id` field: stable sha8 over `source + "→" + target + ":" + method`.
+# Backfilled on load when missing so existing files keep working.
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -89,6 +94,48 @@ def load_links_file(path: Path, key: str = "links") -> tuple[Optional[int], list
         }
         valid.append(normalized)
     return version, valid
+
+
+def derive_candidate_id(source: str, target: str, method: str) -> str:
+    """Stable sha8 over `source + "→" + target + ":" + method`."""
+    raw = f"{source}→{target}:{method}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:8]
+
+
+def load_candidates_file(path: Path) -> tuple[Optional[int], list[dict]]:
+    """Like `load_links_file` but for `<group>-link-candidates.json`. Backfills
+    `id` for entries missing it (stable sha8) so older files keep working.
+    """
+    version, entries = load_links_file(path, key="candidates")
+    for entry in entries:
+        if not entry.get("id"):
+            entry["id"] = derive_candidate_id(entry["source"], entry["target"], entry["method"])
+    return version, entries
+
+
+def load_rejections_file(path: Path) -> tuple[Optional[int], list[dict]]:
+    """Load `<group>-link-rejections.json`. Same shape as candidates."""
+    version, entries = load_links_file(path, key="rejections")
+    for entry in entries:
+        if not entry.get("id"):
+            entry["id"] = derive_candidate_id(entry["source"], entry["target"], entry["method"])
+    return version, entries
+
+
+def write_json_atomic(path: Path, data: dict) -> None:
+    """Atomic write: tmp + rename. Mirrors `src/links.js#writeJsonAtomic`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    payload = json.dumps(data, indent=2) + "\n"
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def build_xrepo_graph(entries: list[dict], has_node) -> nx.Graph:

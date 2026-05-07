@@ -61,9 +61,11 @@ class GraphState:
     safe; reloads are sub-second so the lock contention is negligible.
     """
 
-    def __init__(self, graphs_dir: Path, links_path: Optional[Path]) -> None:
+    def __init__(self, graphs_dir: Path, links_path: Optional[Path], candidates_path: Optional[Path] = None, rejections_path: Optional[Path] = None) -> None:
         self.graphs_dir = graphs_dir
         self.links_path = links_path
+        self.candidates_path = candidates_path
+        self.rejections_path = rejections_path
         self.graphs: dict[str, nx.Graph] = {}
         self.communities: dict[str, dict[int, list[str]]] = {}
         self.mtimes: dict[str, float] = {}
@@ -72,6 +74,8 @@ class GraphState:
         self.label_index = LabelIndex()
         self.xrepo_edges = nx.Graph()
         self.links_mtime: float = 0.0
+        self.candidates_mtime: float = 0.0
+        self.rejections_mtime: float = 0.0
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -104,6 +108,7 @@ class GraphState:
                 if tag not in seen:
                     self.unavailable.pop(tag, None)
             self._reload_links()
+            self._refresh_candidate_rejection_mtimes()
 
     # ------------------------------------------------------------------
     # Per-repo helpers
@@ -188,6 +193,28 @@ class GraphState:
         _version, entries = load_links_file(self.links_path, key="links")
         self.xrepo_edges = build_xrepo_graph(entries, self._has_prefixed_node)
         self.links_mtime = m
+
+    def _refresh_candidate_rejection_mtimes(self) -> None:
+        """Stat candidates/rejections files so callers can detect changes since
+        the last refresh. The actual entries are loaded on-demand by the
+        tool handlers (small files, low frequency) — we only track mtimes
+        here so the watch is uniform with the existing links overlay.
+        """
+        for path_attr, mtime_attr in (
+            ("candidates_path", "candidates_mtime"),
+            ("rejections_path", "rejections_mtime"),
+        ):
+            path = getattr(self, path_attr)
+            if not path:
+                continue
+            try:
+                m = path.stat().st_mtime
+            except OSError:
+                if getattr(self, mtime_attr) != 0.0:
+                    setattr(self, mtime_attr, 0.0)
+                continue
+            if m != getattr(self, mtime_attr):
+                setattr(self, mtime_attr, m)
 
     def _has_prefixed_node(self, prefixed_id: str) -> bool:
         if "::" not in prefixed_id:

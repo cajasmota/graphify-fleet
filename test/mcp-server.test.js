@@ -301,6 +301,213 @@ print('OK')
 });
 
 // ---------------------------------------------------------------------------
+// list_link_candidates / resolve_link_candidate
+// ---------------------------------------------------------------------------
+
+function seedCandidatesFile(path, candidates) {
+    writeFileSync(path, JSON.stringify({ version: 1, candidates }));
+}
+
+test('list_link_candidates: filters by channel/method, sorts by confidence desc, truncates to limit', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const candPath = join(tmp, 'cands.json');
+        seedCandidatesFile(candPath, [
+            { source: 'a::n1', target: 'b::n2', relation: 'r', method: 'label_match', confidence: 0.4, discovered_at: '2026-04-01T00:00:00Z', channel: null },
+            { source: 'a::n3', target: 'b::n4', relation: 'r', method: 'string',      confidence: 0.7, discovered_at: '2026-04-02T00:00:00Z', channel: 'http' },
+            { source: 'a::n5', target: 'b::n6', relation: 'r', method: 'label_match', confidence: 0.6, discovered_at: '2026-04-03T00:00:00Z', channel: null },
+            { source: 'a::n7', target: 'b::n8', relation: 'r', method: 'string',      confidence: 0.7, discovered_at: '2026-04-04T00:00:00Z', channel: 'redis_key' },
+            { source: 'c::n9', target: 'd::n0', relation: 'r', method: 'label_match', confidence: 0.5, discovered_at: '2026-04-05T00:00:00Z', channel: null },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import list_link_candidates
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None, Path(${JSON.stringify(candPath)}), None)
+state.initial_load()
+# No filter, limit 2 -> sort by confidence desc, two highest at 0.7
+out = json.loads(list_link_candidates(state, {'limit': 2}))
+assert out['total'] == 5, out
+assert out['shown'] == 2
+assert out['candidates'][0]['confidence'] == 0.7
+assert out['candidates'][1]['confidence'] == 0.7
+# Tiebreak: older discovered_at first.
+assert out['candidates'][0]['discovered_at'] < out['candidates'][1]['discovered_at']
+# method filter
+out2 = json.loads(list_link_candidates(state, {'method': 'label_match'}))
+assert out2['total'] == 3, out2
+# channel filter
+out3 = json.loads(list_link_candidates(state, {'channel': 'http'}))
+assert out3['total'] == 1 and out3['candidates'][0]['channel'] == 'http'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `list_link_candidates script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('list_link_candidates: repo_filter matches source OR target prefix', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const candPath = join(tmp, 'cands.json');
+        seedCandidatesFile(candPath, [
+            { source: 'backend::a', target: 'frontend::b', relation: 'r', method: 'label_match', confidence: 0.5, discovered_at: '2026-04-01T00:00:00Z' },
+            { source: 'mobile::c',  target: 'core::d',     relation: 'r', method: 'label_match', confidence: 0.5, discovered_at: '2026-04-02T00:00:00Z' },
+            { source: 'core::e',    target: 'backend::f',  relation: 'r', method: 'label_match', confidence: 0.5, discovered_at: '2026-04-03T00:00:00Z' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import list_link_candidates
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None, Path(${JSON.stringify(candPath)}), None)
+state.initial_load()
+out = json.loads(list_link_candidates(state, {'repo_filter': 'backend'}))
+assert out['total'] == 2, out
+sources = [c['source'] for c in out['candidates']]
+assert 'mobile::c' not in sources
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `repo_filter script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('resolve_link_candidate: confirm moves entry to links file with +resolved suffix and confidence 1.0', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const candPath = join(tmp, 'cands.json');
+        const linksFile = join(tmp, 'links.json');
+        const rejPath = join(tmp, 'rej.json');
+        seedCandidatesFile(candPath, [
+            { source: 'a::n1', target: 'b::n2', relation: 'shared_label', method: 'label_match', confidence: 0.45, discovered_at: '2026-04-01T00:00:00Z', channel: null, identifier: 'order' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import list_link_candidates, resolve_link_candidate
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), Path(${JSON.stringify(linksFile)}), Path(${JSON.stringify(candPath)}), Path(${JSON.stringify(rejPath)}))
+state.initial_load()
+listed = json.loads(list_link_candidates(state, {}))
+cid = listed['candidates'][0]['id']
+assert cid, 'expected backfilled id'
+out = json.loads(resolve_link_candidate(state, {'candidate_id': cid, 'decision': 'confirm', 'reason': 'verified by review'}))
+assert out['resolved'] is True and out['decision'] == 'confirm' and out['moved_to'] == 'links', out
+
+# Candidates file empty
+cands_after = json.loads(open(${JSON.stringify(candPath)}).read())
+assert cands_after['candidates'] == [], cands_after
+
+# Links file has the promoted entry
+links_after = json.loads(open(${JSON.stringify(linksFile)}).read())
+assert len(links_after['links']) == 1
+link = links_after['links'][0]
+assert link['method'] == 'label_match+resolved', link
+assert link['confidence'] == 1.0
+assert link['resolution']['by'] == 'agent'
+assert link['resolution']['reason'] == 'verified by review'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `confirm script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('resolve_link_candidate: reject moves entry from candidates to rejections file', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const candPath = join(tmp, 'cands.json');
+        const linksFile = join(tmp, 'links.json');
+        const rejPath = join(tmp, 'rej.json');
+        seedCandidatesFile(candPath, [
+            { source: 'a::n1', target: 'b::n2', relation: 'shared_label', method: 'label_match', confidence: 0.4, discovered_at: '2026-04-01T00:00:00Z' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import list_link_candidates, resolve_link_candidate
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), Path(${JSON.stringify(linksFile)}), Path(${JSON.stringify(candPath)}), Path(${JSON.stringify(rejPath)}))
+state.initial_load()
+listed = json.loads(list_link_candidates(state, {}))
+cid = listed['candidates'][0]['id']
+out = json.loads(resolve_link_candidate(state, {'candidate_id': cid, 'decision': 'reject', 'reason': 'false positive'}))
+assert out['moved_to'] == 'rejections' and out['decision'] == 'reject', out
+
+cands_after = json.loads(open(${JSON.stringify(candPath)}).read())
+assert cands_after['candidates'] == []
+
+rej_after = json.loads(open(${JSON.stringify(rejPath)}).read())
+assert len(rej_after['rejections']) == 1
+assert rej_after['rejections'][0]['resolution']['reason'] == 'false positive'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `reject script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('resolve_link_candidate: not found returns error shape', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const candPath = join(tmp, 'cands.json');
+        const linksFile = join(tmp, 'links.json');
+        const rejPath = join(tmp, 'rej.json');
+        seedCandidatesFile(candPath, []);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import resolve_link_candidate
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), Path(${JSON.stringify(linksFile)}), Path(${JSON.stringify(candPath)}), Path(${JSON.stringify(rejPath)}))
+state.initial_load()
+out = json.loads(resolve_link_candidate(state, {'candidate_id': 'deadbeef', 'decision': 'confirm'}))
+assert out.get('error') == 'candidate not found' and out.get('candidate_id') == 'deadbeef', out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `not-found script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
 // ensureGroupGraphsDir / symlink layout (preserved from earlier tests)
 // ---------------------------------------------------------------------------
 

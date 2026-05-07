@@ -42,6 +42,26 @@ export function linksPath(group, base = GROUPS_DIR_DEFAULT) {
 export function candidatesPath(group, base = GROUPS_DIR_DEFAULT) {
     return join(base, `${group}-link-candidates.json`);
 }
+export function rejectionsPath(group, base = GROUPS_DIR_DEFAULT) {
+    return join(base, `${group}-link-rejections.json`);
+}
+
+// Load the rejection list (entries the agent has explicitly rejected via the
+// MCP `resolve_link_candidate` tool) and return a Set of stable `(source,
+// target, method)` keys so a link pass can skip re-emitting them. Strips any
+// trailing `+resolved` suffix on `method` so a confirmed-then-rejected entry
+// still matches against fresh candidate emissions.
+export function loadRejectionsKeySet(group, base = GROUPS_DIR_DEFAULT) {
+    const obj = readJsonOrNull(rejectionsPath(group, base));
+    const out = new Set();
+    if (!obj || !Array.isArray(obj.rejections)) return out;
+    for (const r of obj.rejections) {
+        if (!r || typeof r !== 'object') continue;
+        const method = (typeof r.method === 'string' ? r.method : '').replace(/\+resolved$/, '');
+        out.add(`${r.source}|${r.target}|${method}`);
+    }
+    return out;
+}
 
 function ensureDir(p) { mkdirSync(p, { recursive: true }); }
 
@@ -349,6 +369,7 @@ export function runLabelLinkPass(group, graphsDir, opts = {}) {
     const seenCand = new Set();
     const now = new Date().toISOString();
     const corpusDenom = Math.log(corpusSize + 1) || 1;
+    const rejected = loadRejectionsKeySet(group, base);
 
     for (const [norm, entries] of index.entries()) {
         // Group by repo to detect "appears in 2+ different repos".
@@ -379,6 +400,7 @@ export function runLabelLinkPass(group, graphsDir, opts = {}) {
 
                 const sourceFull = `${a.repo}::${a.nodeId}`;
                 const targetFull = `${b.repo}::${b.nodeId}`;
+                if (rejected.has(`${sourceFull}|${targetFull}|label_match`)) continue;
                 const record = {
                     source: sourceFull,
                     target: targetFull,
@@ -761,6 +783,7 @@ export function runStringLinkPass(group, graphsDir, opts = {}) {
     const newLinks = [];
     const seenLink = new Set();
     const now = new Date().toISOString();
+    const rejected = loadRejectionsKeySet(group, base);
 
     for (const [, entries] of index.entries()) {
         const byRepo = new Map();
@@ -778,6 +801,7 @@ export function runStringLinkPass(group, graphsDir, opts = {}) {
                 const a = reps[i], b = reps[j];
                 const sourceFull = `${a.repo}::file::${a.file}`;
                 const targetFull = `${b.repo}::file::${b.file}`;
+                if (rejected.has(`${sourceFull}|${targetFull}|string`)) continue;
                 const k = `${sourceFull}|${targetFull}|string_match|string|${a.category}|${a.normalized}`;
                 if (seenLink.has(k)) continue;
                 seenLink.add(k);

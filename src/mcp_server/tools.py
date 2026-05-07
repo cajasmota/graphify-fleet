@@ -17,6 +17,13 @@ from typing import Optional
 import networkx as nx
 
 from .context_filter import _filter_graph_by_context, _resolve_context_filters
+from .links_loader import (
+    derive_candidate_id,
+    load_candidates_file,
+    load_links_file,
+    load_rejections_file,
+    write_json_atomic,
+)
 from .scoring import _score_nodes, _strip_diacritics
 from .state import GraphState
 from .traversal import _bfs, _dfs
@@ -439,3 +446,128 @@ def save_result(state: GraphState, arguments: dict, *, group: Optional[str]) -> 
     }
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return json.dumps({"saved_at": saved_at, "memory_path": str(out_path)})
+
+
+# ---------------------------------------------------------------------------
+# Link candidate review tools (list_link_candidates / resolve_link_candidate)
+# ---------------------------------------------------------------------------
+
+def _matches_repo_filter(prefixed: str, repo_filter: str) -> bool:
+    """`<repo>::...` prefix match on either source or target."""
+    if not isinstance(prefixed, str) or "::" not in prefixed:
+        return False
+    return prefixed.split("::", 1)[0] == repo_filter
+
+
+def list_link_candidates(state: GraphState, arguments: dict) -> str:
+    """Return filtered + sorted candidates from `<group>-link-candidates.json`."""
+    state.refresh_if_stale()
+    repo_filter = arguments.get("repo_filter")
+    channel = arguments.get("channel")
+    method = arguments.get("method")
+    limit = int(arguments.get("limit", 20))
+
+    path = state.candidates_path
+    if path is None or not path.exists():
+        return json.dumps({"total": 0, "shown": 0, "candidates": []})
+
+    _version, entries = load_candidates_file(path)
+    filtered: list[dict] = []
+    for entry in entries:
+        if repo_filter and not (
+            _matches_repo_filter(entry.get("source", ""), repo_filter)
+            or _matches_repo_filter(entry.get("target", ""), repo_filter)
+        ):
+            continue
+        if channel is not None and entry.get("channel") != channel:
+            continue
+        if method is not None and entry.get("method") != method:
+            continue
+        filtered.append(entry)
+
+    # Sort: confidence desc, then discovered_at asc (older first as tiebreak).
+    filtered.sort(key=lambda e: (-(e.get("confidence") or 0.0), e.get("discovered_at") or ""))
+    total = len(filtered)
+    shown = filtered[: max(0, limit)]
+    return json.dumps({"total": total, "shown": len(shown), "candidates": shown})
+
+
+def _now_iso() -> str:
+    return _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def resolve_link_candidate(state: GraphState, arguments: dict) -> str:
+    """Confirm or reject a candidate. Persists to disk atomically."""
+    state.refresh_if_stale()
+    candidate_id = str(arguments.get("candidate_id") or "").strip()
+    decision = str(arguments.get("decision") or "").strip().lower()
+    reason = arguments.get("reason")
+    override_target = arguments.get("override_target")
+
+    if not candidate_id:
+        return json.dumps({"error": "resolve_link_candidate: 'candidate_id' is required"})
+    if decision not in ("confirm", "reject"):
+        return json.dumps({"error": "resolve_link_candidate: 'decision' must be 'confirm' or 'reject'"})
+
+    cand_path = state.candidates_path
+    links_path = state.links_path
+    rej_path = state.rejections_path
+    if cand_path is None:
+        return json.dumps({"error": "resolve_link_candidate: candidates path not configured (run with --group)"})
+
+    _cv, candidates = load_candidates_file(cand_path) if cand_path.exists() else (None, [])
+
+    target_idx = next(
+        (i for i, c in enumerate(candidates) if c.get("id") == candidate_id),
+        None,
+    )
+    if target_idx is None:
+        return json.dumps({"error": "candidate not found", "candidate_id": candidate_id})
+
+    candidate = candidates.pop(target_idx)
+    resolution = {
+        "by": "agent",
+        "at": _now_iso(),
+        "reason": reason,
+    }
+
+    if decision == "confirm":
+        if links_path is None:
+            return json.dumps({"error": "resolve_link_candidate: links path not configured"})
+        if isinstance(override_target, str) and override_target:
+            candidate["target"] = override_target
+        original_method = candidate.get("method") or ""
+        if not original_method.endswith("+resolved"):
+            candidate["method"] = f"{original_method}+resolved"
+        candidate["confidence"] = 1.0
+        candidate["resolution"] = resolution
+        # Recompute id since target/method may have changed.
+        candidate["id"] = derive_candidate_id(
+            candidate["source"], candidate["target"], candidate["method"]
+        )
+
+        _lv, existing_links = load_links_file(links_path) if links_path.exists() else (None, [])
+        existing_links.append(candidate)
+        write_json_atomic(links_path, {"version": 1, "links": existing_links})
+        write_json_atomic(cand_path, {"version": 1, "candidates": candidates})
+        return json.dumps({
+            "resolved": True,
+            "candidate_id": candidate_id,
+            "decision": "confirm",
+            "moved_to": "links",
+        })
+
+    # decision == "reject"
+    if rej_path is None:
+        return json.dumps({"error": "resolve_link_candidate: rejections path not configured"})
+    candidate["resolution"] = resolution
+    _rv, existing_rej = load_rejections_file(rej_path) if rej_path.exists() else (None, [])
+    existing_rej.append(candidate)
+    write_json_atomic(rej_path, {"version": 1, "rejections": existing_rej})
+    write_json_atomic(cand_path, {"version": 1, "candidates": candidates})
+    return json.dumps({
+        "resolved": True,
+        "candidate_id": candidate_id,
+        "decision": "reject",
+        "moved_to": "rejections",
+    })

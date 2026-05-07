@@ -345,6 +345,32 @@ test('runLabelLinkPass: re-run idempotent (link set stable)', () => {
     } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 
+test('runLabelLinkPass: rejection file suppresses re-emission of rejected pair', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        writeGraph(graphsDir, 'backend', [
+            { id: 'be_order', label: 'Order', repo: 'backend', extra: { file_type: 'code', source_file: 'models/order.py' } },
+            ...fillerNodes('be', 40),
+        ], []);
+        writeGraph(graphsDir, 'frontend', [
+            { id: 'fe_order', label: 'Order', repo: 'frontend', extra: { file_type: 'code', source_file: 'models/order.ts' } },
+            ...fillerNodes('fe', 40),
+        ], []);
+        // Pre-seed a rejection that exactly matches the pair the pass would emit.
+        writeFileSync(join(tmp, 'g-link-rejections.json'), JSON.stringify({
+            version: 1,
+            rejections: [
+                { source: 'backend::be_order', target: 'frontend::fe_order', relation: 'shared_label', method: 'label_match', confidence: 0.0, discovered_at: 'past' },
+            ],
+        }));
+        const r = runLabelLinkPass('g', graphsDir, { base: tmp });
+        assert.equal(r.links, 0, 'rejected pair must not re-emit');
+        const obj = loadLinks('g', tmp);
+        assert.equal(obj.links.filter(l => l.method === 'label_match').length, 0);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
 test('runLabelLinkPass: suffix stripping — OrderViewSet matches Order', () => {
     const tmp = mkTmp();
     try {
