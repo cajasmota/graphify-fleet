@@ -1,21 +1,28 @@
 import { parseArgs } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
     log, die, which, graphifyBin, graphifyPython, run,
     listRegistered, resolveConfigArg, REGISTRY, GRAPHIFY_PIN, getGraphifyVersion,
+    ROOT_DIR, loadConfig, expandPath,
 } from './util.js';
 import { install, uninstall } from './install.js';
 import * as ops from './ops.js';
 import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
-import { docsInit, docsStatus, docsRun, docsPath, marksStale } from './docs.js';
+import { docsInit, docsStatus, docsRun, docsPath, marksStale, docsSilence, docsUnsilence, docsClearStale } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
 import { onboard } from './onboard.js';
 import { update } from './update.js';
 import { conventionsList, conventionsAdd, conventionsRemove } from './conventions.js';
 
-const VERSION = '0.2.0';
+// Read VERSION from package.json so it can't drift from the package metadata.
+let VERSION = '0.0.0';
+try {
+    const pkg = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8'));
+    VERSION = pkg.version || VERSION;
+} catch {}
 
 function help() {
     log.say(`gfleet ${VERSION} — install once. The agent in your IDE handles the rest.`);
@@ -29,6 +36,7 @@ function help() {
     log.say('  doctor                         verify everything is wired correctly');
     log.say('  status       [group]           show what is running');
     log.say('  list                           show registered groups (alias: ls)');
+    log.say('  start | stop | restart [group] watcher control (auto-loaded at login; rarely needed)');
     log.say('');
     log.say('REPAIR (when things misbehave)');
     log.say('  rebuild | reset | remerge      force regenerate per-repo or group graphs');
@@ -52,6 +60,7 @@ function helpAdvanced() {
     log.say('  wizard                              interactive first-time setup');
     log.say('  onboard   [path]                    join an existing group after git clone');
     log.say('  update    [--refresh-rules]         pull latest gfleet, redeploy skills, repatch graphify');
+    log.say('  update    [--refresh-rules-lite]    fast: only rewrite rules/manifests/MCP — no graph rebuilds, no watcher reinstalls');
     log.say('  doctor                              verify everything is wired correctly');
     log.say('  install   <config.json>             [auto via wizard/onboard] install fleet group + register');
     log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs');
@@ -67,6 +76,9 @@ function helpAdvanced() {
     log.say('  docs run      <group>               instructions for /generate-docs in IDE');
     log.say('  docs path     <group>               print the group docs path');
     log.say('  docs init-cli <group>               headless CLI Q&A — prefer /generate-docs --setup-only');
+    log.say('  docs silence    <group> [--ttl 4h]  suppress stale-doc prompts for current workspace');
+    log.say('  docs unsilence  <group>             remove silenced-session entries for current workspace');
+    log.say('  docs clear-stale <group>            wipe .stale.md + stale.json (mark all up-to-date)');
     log.say('  (docs mark-stale --stdin            internal hook entry point — not for direct use)');
     log.say('');
     log.say('CONVENTIONS  [power user — usually only one ever needs this]');
@@ -134,6 +146,51 @@ function doctor() {
     } else {
         log.warn('graphify not installed yet (gfleet install will install it)');
     }
+
+    // Per-group health check: verify every registered repo path still exists
+    // and has a .git (file or dir). For monorepo modules check both the
+    // monorepo root and the module path. Surface the fix path.
+    const groups = listRegistered();
+    const groupNames = Object.keys(groups);
+    if (groupNames.length === 0) return;
+    log.hr();
+    let drift = 0;
+    for (const name of groupNames) {
+        const cfgPath = groups[name].config;
+        if (!existsSync(cfgPath)) {
+            log.err(`group '${name}' — config missing: ${cfgPath}`);
+            log.info(`  hint: re-run 'gfleet wizard' or remove from ~/.graphify-fleet/registry.json`);
+            drift++;
+            continue;
+        }
+        let cfg;
+        try { cfg = loadConfig(cfgPath); }
+        catch (e) {
+            log.err(`group '${name}' — config unreadable: ${e.message}`);
+            drift++;
+            continue;
+        }
+        for (const r of cfg.repos) {
+            const repoPath = expandPath(r.path);
+            if (!existsSync(repoPath)) {
+                log.err(`group '${name}' — repo path missing: ${repoPath}`);
+                log.info(`  hint: Run 'gfleet onboard' to remap, or edit ~/.gfleet/${name}.fleet.json`);
+                drift++;
+                continue;
+            }
+            const gitRoot = r.monorepoRoot ?? repoPath;
+            if (!existsSync(join(gitRoot, '.git'))) {
+                log.err(`group '${name}' — no .git at ${gitRoot} (slug: ${r.slug})`);
+                log.info(`  hint: Run 'gfleet onboard' to remap, or edit ~/.gfleet/${name}.fleet.json`);
+                drift++;
+            }
+            if (r.monorepoRoot && !existsSync(r.monorepoRoot)) {
+                log.err(`group '${name}' — monorepo root missing: ${r.monorepoRoot} (module: ${r.slug})`);
+                drift++;
+            }
+        }
+    }
+    if (drift === 0) log.ok(`all ${groupNames.length} group(s) healthy (paths + .git resolve)`);
 }
 
 function showRegistryOrHelp() {
@@ -174,8 +231,9 @@ export async function main(argv) {
             case 'onboard': await onboard(args[0] ?? '.'); break;
             case 'update': {
                 const refreshRules = args.includes('--refresh-rules');
+                const refreshRulesLite = args.includes('--refresh-rules-lite');
                 const force = args.includes('--force');
-                await update({ refreshRules, force });
+                await update({ refreshRules, refreshRulesLite, force });
                 break;
             }
             case 'list': case 'ls': ops.list(); break;
@@ -283,6 +341,14 @@ export async function main(argv) {
                     case 'status':   await docsStatus(target); break;
                     case 'run':      docsRun(target); break;
                     case 'path':     docsPath(target); break;
+                    case 'silence': {
+                        const ttlIdx = args.indexOf('--ttl');
+                        const ttl = ttlIdx >= 0 ? args[ttlIdx + 1] : '4h';
+                        await docsSilence(target, { ttl });
+                        break;
+                    }
+                    case 'unsilence': await docsUnsilence(target); break;
+                    case 'clear-stale': await docsClearStale(target); break;
                     case 'mark-stale': {
                         // Internal — invoked by git hooks. Reads paths from stdin.
                         // Flags:
@@ -300,7 +366,7 @@ export async function main(argv) {
                         await marksStale({ group, hook, range, repoFilter, lines });
                         break;
                     }
-                    default: die('usage: gfleet docs {init-cli|status|run|path|mark-stale} [group]');
+                    default: die('usage: gfleet docs {init-cli|status|run|path|silence|unsilence|clear-stale|mark-stale} [group]');
                 }
                 break;
             }

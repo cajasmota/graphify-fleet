@@ -9,6 +9,14 @@ import {
 
 const STACK_TEMPLATES = ['react-native', 'python', 'node', 'go', 'generic'];
 
+// Pinned commit of the upstream graphify SKILL.md for Windsurf.
+// Bump WINDSURF_SKILL_PIN ONLY after testing the new SKILL.md against the
+// current /generate-docs flow (run /generate-docs end-to-end in Windsurf
+// against a representative monorepo group; verify cross-link pass works).
+// Build the URL from the pin so updates are a one-line edit.
+const WINDSURF_SKILL_PIN = '7c77a891939f889b99b48c0e8bc8cee5546a4c72';
+const WINDSURF_SKILL_URL = `https://raw.githubusercontent.com/safishamsi/graphify/${WINDSURF_SKILL_PIN}/graphify/skill-windsurf.md`;
+
 const STACK_HEADER_RE = /^# gfleet:stack=([\w-]+)/m;
 
 export function writeGraphifyignore(repo, stack) {
@@ -125,8 +133,12 @@ export function upsertAgentRulesBlock(rulesFile, group, groupGraph, allRepos = [
     }
     // 2. If old thin block exists ("## graphify" without our markers): replace it
     else if (/^## graphify\b/m.test(cur)) {
-        // strip from "## graphify" header to the next H2 (or EOF)
-        cur = cur.replace(/(^|\n)## graphify\b[\s\S]*?(?=\n## |\n*$)/m, `$1${RULES_START}\n${block}\n${RULES_END}\n`);
+        // strip from "## graphify" header to the next H2 (or EOF).
+        // Note: do NOT use the `m` flag here. With `m`, the `\n*$` lookahead
+        // matches end-of-line (i.e. immediately after the `## graphify` heading
+        // text), making `[\s\S]*?` collapse to zero chars and leaving the old
+        // section content in place. Anchoring `$` to end-of-string fixes that.
+        cur = cur.replace(/(^|\n)## graphify\b[\s\S]*?(?=\n## |\n*$(?![\s\S]))/, `$1${RULES_START}\n${block}\n${RULES_END}\n`);
     }
     // 3. Append fresh
     else {
@@ -491,8 +503,9 @@ export function removeWindsurfFiles(repo) {
         const before = cur;
         // marker-wrapped block
         cur = cur.replace(/\n*<!-- gfleet:graphify-rules:start -->[\s\S]*?<!-- gfleet:graphify-rules:end -->\n*/g, '\n');
-        // legacy thin "## graphify" section (terminate at next H2 or EOF)
-        cur = cur.replace(/\n*## graphify\b[\s\S]*?(?=\n## |\n*$)/g, '\n');
+        // legacy thin "## graphify" section (terminate at next H2 or EOF).
+        // See upsertAgentRulesBlock for why `\n*$` (not `\n*$(?![\s\S])`) is wrong.
+        cur = cur.replace(/\n*## graphify\b[\s\S]*?(?=\n## |\n*$(?![\s\S]))/g, '\n');
         if (cur !== before) writeFileSync(f, cur);
     }
 }
@@ -552,7 +565,7 @@ export function removeWindsurfGlobalMcp(group) {
 }
 
 const WINDSURF_SKILL_DST = join(process.env.HOME ?? '', '.codeium', 'windsurf', 'skills', 'graphify', 'SKILL.md');
-const WINDSURF_SKILL_URL = 'https://raw.githubusercontent.com/safishamsi/graphify/7c77a891939f889b99b48c0e8bc8cee5546a4c72/graphify/skill-windsurf.md';
+// (URL declared at top of file from WINDSURF_SKILL_PIN.)
 
 export async function ensureWindsurfSkill({ force = false } = {}) {
     // Pass force=true (or set GFLEET_REFRESH_WINDSURF_SKILL=1) to re-fetch.

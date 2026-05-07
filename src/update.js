@@ -9,11 +9,21 @@
 //   6. Optionally refresh agent rules in registered groups (--refresh-rules)
 //   7. Print summary with what changed
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ROOT_DIR, log, run, runOk, listRegistered, die } from './util.js';
+import { ROOT_DIR, log, run, runOk, listRegistered, loadConfig, die } from './util.js';
 import { skillsInstall } from './skills.js';
 import { applyPatch as applyGraphifyPatch, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
+import {
+    ensureClaudeRules, ensureAgentsRules, writeWindsurfFiles, writeMcpJson,
+    writeGroupManifest, installGitHooks, writeRemergeHelper,
+} from './integrations.js';
+
+// Read the same VERSION as cli.js to keep "gfleet update" output consistent.
+let VERSION = '0.0.0';
+try {
+    VERSION = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8')).version || VERSION;
+} catch {}
 
 function inGitRepo(dir) {
     return existsSync(join(dir, '.git'));
@@ -40,7 +50,54 @@ function fileChanged(dir, file, oldSha, newSha) {
     return r.code === 0 && r.stdout.trim().length > 0;
 }
 
-export async function update({ refreshRules = false, force = false } = {}) {
+// Lightweight rules refresh: rewrite ONLY the template-derived files
+// (CLAUDE.md / AGENTS.md / .windsurfrules block, .gfleet/group.json, per-repo
+// .windsurf/workflows, MCP entries, hook block contents). Skips:
+//   - installWatcher (no service churn)
+//   - graphify update / build_initial_graph (no AST rebuilds)
+//   - installClaudeSkill (Claude skill registration)
+//   - ensureGraphify (no python install / patch reapply)
+// Idempotent: relies on the same upsert helpers as the full install.
+export async function refreshRulesLite() {
+    const groups = listRegistered();
+    const cfgs = Object.values(groups).map(g => g.config).filter(c => existsSync(c));
+    if (cfgs.length === 0) {
+        log.info('(no groups registered)');
+        return;
+    }
+    for (const cfgPath of cfgs) {
+        log.say('');
+        const cfg = loadConfig(cfgPath);
+        log.head(`refreshing rules for: ${cfg.group}`);
+        const helper = writeRemergeHelper(cfg.group, cfg.groupGraph, cfg.repos);
+        const groupDocs = cfg.docs?.group_docs_path ?? null;
+        const hookedGitRoots = new Set();
+        for (const r of cfg.repos) {
+            if (!existsSync(r.path)) { log.warn(`skip missing path: ${r.path}`); continue; }
+            const gitRoot = r.monorepoRoot ?? r.path;
+            // Rules + workflows + MCP
+            if (cfg.options.claude_code) {
+                ensureClaudeRules(r.path, cfg.group, cfg.groupGraph, cfg.repos, groupDocs, r.slug);
+                ensureAgentsRules(r.path, cfg.group, cfg.groupGraph, cfg.repos, groupDocs, r.slug);
+            }
+            if (cfg.options.windsurf) writeWindsurfFiles(r.path, cfg.group, cfg.groupGraph, cfg.repos, r.slug);
+            writeMcpJson(r.path, cfg.groupGraph, r.slug, cfg.group);
+            // Hooks: idempotent block upsert (no rebuilds, no watchers).
+            if (!hookedGitRoots.has(gitRoot)) {
+                installGitHooks(gitRoot, cfg.group, helper);
+                hookedGitRoots.add(gitRoot);
+            }
+            // Manifest (committed) — rewrites siblings list to current state.
+            writeGroupManifest(r.path, cfg.group, { ...cfg.options, docs: cfg.docs }, r, cfg.repos);
+            if (r.monorepoRoot && r.monorepoRoot !== r.path) {
+                writeGroupManifest(r.monorepoRoot, cfg.group, { ...cfg.options, docs: cfg.docs }, r, cfg.repos);
+            }
+        }
+        log.ok(`rules refreshed for ${cfg.group}`);
+    }
+}
+
+export async function update({ refreshRules = false, refreshRulesLite: liteFlag = false, force = false } = {}) {
     log.say('gfleet update');
     log.hr();
     log.info(`install dir: ${ROOT_DIR}`);
@@ -125,7 +182,13 @@ export async function update({ refreshRules = false, force = false } = {}) {
     else if (ps.state === 'partial')   { log.warn(`partial patch — re-applying`); applyGraphifyPatch(); }
     else if (ps.state === 'unpatched') { log.warn(`unpatched — applying`); applyGraphifyPatch(); }
 
-    // 6. Optional: refresh agent rules across all registered groups
+    // 6a. Optional: lightweight rules refresh (no rebuilds, no watcher churn).
+    if (liteFlag) {
+        log.say('');
+        log.head('refreshing rules (lite — no rebuilds, no watcher reinstalls)');
+        await refreshRulesLite();
+    }
+    // 6. Optional: refresh agent rules across all registered groups (FULL install)
     if (refreshRules) {
         log.say('');
         log.head('refreshing agent rules in registered groups');
@@ -156,7 +219,7 @@ export async function update({ refreshRules = false, force = false } = {}) {
     // 7. Final summary
     log.say('');
     log.hr();
-    if (beforeSha === afterSha && !refreshRules) {
+    if (beforeSha === afterSha && !refreshRules && !liteFlag) {
         log.ok('already up-to-date');
     } else {
         log.ok(`updated to ${afterSha}`);

@@ -233,7 +233,8 @@ export async function wizard() {
         group,
         repos: repos.map(r => ({ path: r.path, slug: r.slug, stack: r.stack })),
         options: {
-            wiki_gitignored: true,
+            // wiki_gitignored is no longer surfaced — it's effectively
+            // always-true (docs/ is always gitignored by graphify-fleet).
             watchers:    features.includes('watchers'),
             windsurf:    features.includes('windsurf'),
             claude_code: features.includes('claude_code'),

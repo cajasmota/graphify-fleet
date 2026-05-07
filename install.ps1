@@ -46,6 +46,35 @@ function Test-Cmd($name) {
     return [bool] (Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+# Refresh-Path: read Process + Machine + User PATH, merge them with the
+# correct platform-specific path separator, and case-insensitively
+# deduplicate (Windows is case-insensitive on path entries). Returns the
+# combined string. Use this anywhere we need PATH to reflect a freshly
+# installed binary (after winget / uv install / etc.).
+function Refresh-Path {
+    $sep = [System.IO.Path]::PathSeparator
+    $machine = [System.Environment]::GetEnvironmentVariable('Path','Machine')
+    $user    = [System.Environment]::GetEnvironmentVariable('Path','User')
+    $process = [System.Environment]::GetEnvironmentVariable('Path','Process')
+    $combined = @($machine, $user, $process) | Where-Object { $_ }
+    $entries = @()
+    foreach ($block in $combined) {
+        foreach ($e in ($block -split [regex]::Escape($sep))) {
+            if ($e) { $entries += $e }
+        }
+    }
+    $seen = @{}
+    $deduped = @()
+    foreach ($e in $entries) {
+        $key = $e.TrimEnd('\','/').ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $deduped += $e
+        }
+    }
+    return ($deduped -join $sep)
+}
+
 # Microsoft Store ships a "python.exe" stub at %LOCALAPPDATA%\Microsoft\WindowsApps
 # that, when executed, opens the Store. Detect and skip it so we don't accidentally
 # launch the Store mid-install.
@@ -76,8 +105,8 @@ if (Test-Cmd 'git') {
 } else {
     Warn 'git not found'
     if (-not (Install-ViaWinget 'Git.Git' 'Git')) { exit 1 }
-    # Refresh PATH for this session
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
+    # Refresh PATH for this session (Process + Machine + User, deduped)
+    $env:Path = Refresh-Path
     if (-not (Test-Cmd 'git')) { Err 'git install completed but PATH not refreshed. Restart PowerShell and re-run.'; exit 1 }
     Ok 'git installed'
 }
@@ -97,7 +126,7 @@ if (Test-Cmd 'node') {
 
 if ($needNode) {
     if (-not (Install-ViaWinget 'OpenJS.NodeJS.LTS' 'Node.js LTS')) { exit 1 }
-    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
+    $env:Path = Refresh-Path
     if (-not (Test-Cmd 'node')) { Err 'node install completed but PATH not refreshed. Restart PowerShell and re-run.'; exit 1 }
     Ok "node installed: $(node -v)"
 }
@@ -109,7 +138,10 @@ if (Test-Cmd 'uv') {
     Warn 'uv not found; installing via official PowerShell installer'
     try {
         Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-        $env:Path = (Join-Path $env:USERPROFILE '.local\bin') + ';' + $env:Path
+        # Make sure ~/.local/bin (where uv lands) and any other newly-installed
+        # tools are on PATH for the rest of this session.
+        $uvBin = (Join-Path $env:USERPROFILE '.local\bin')
+        $env:Path = "$uvBin$([System.IO.Path]::PathSeparator)" + (Refresh-Path)
         if (Test-Cmd 'uv') {
             Ok "uv installed: $(uv --version)"
         } else {

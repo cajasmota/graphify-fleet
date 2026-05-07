@@ -4,10 +4,10 @@
 // for indexing, watching, and MCP wiring.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, basename, dirname, resolve } from 'node:path';
+import { join, basename, dirname, extname, resolve } from 'node:path';
 import { intro, outro, select, multiselect, confirm, text, isCancel, cancel, note } from '@clack/prompts';
 import {
-    HOME, expandPath, log, run, readJson, writeJson, listRegistered, loadConfig, die,
+    HOME, expandPath, log, readJson, writeJson, listRegistered, loadConfig, die,
 } from './util.js';
 
 // ------------------------------------------------------------
@@ -265,14 +265,30 @@ function detectStack(modulePath) {
     return 'generic';
 }
 
+// Cross-platform LOC estimate: walk the module tree in Node, counting
+// newline-separated lines in source files. Bounded depth + file-size and a
+// safety cap so a huge module doesn't stall the wizard.
 function estimateLoc(modulePath) {
-    // Rough LOC estimate via wc -l on relevant source files. Cheap.
-    try {
-        const r = run('bash', ['-c',
-            `find "${modulePath}" -type f \\( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.rs" \\) ` +
-            `-not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/.venv/*" 2>/dev/null | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}'`]);
-        return parseInt(r.stdout, 10) || 0;
-    } catch { return 0; }
+    const exts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs']);
+    const ignore = new Set(['node_modules', 'dist', '.venv', 'venv', '.next', '.turbo', 'target']);
+    let total = 0;
+    function walk(dir, depth) {
+        if (depth > 6) return;  // safety
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); }
+        catch { return; }
+        for (const e of entries) {
+            if (ignore.has(e.name) || e.name.startsWith('.')) continue;
+            const full = join(dir, e.name);
+            if (e.isDirectory()) walk(full, depth + 1);
+            else if (e.isFile() && exts.has(extname(e.name))) {
+                try { total += readFileSync(full, 'utf8').split('\n').length; }
+                catch {}
+            }
+        }
+    }
+    walk(modulePath, 0);
+    return total;
 }
 
 // ------------------------------------------------------------

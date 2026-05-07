@@ -8,9 +8,36 @@
 //
 // Affects: query_graph, get_neighbors, shortest_path tools.
 
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
 import { graphifyPython, log } from '../util.js';
+
+// Persistent state across patch operations: tracks which gfleet version (and
+// installed graphify version) created the backup file, so we can invalidate
+// the backup when graphifyy is upgraded out from under us.
+const PATCH_STATE_PATH = join(homedir(), '.graphify-fleet', 'patch-state.json');
+
+function readPatchState() {
+    if (!existsSync(PATCH_STATE_PATH)) return {};
+    try { return JSON.parse(readFileSync(PATCH_STATE_PATH, 'utf8')); }
+    catch { return {}; }
+}
+
+function writePatchState(obj) {
+    try {
+        mkdirSync(dirname(PATCH_STATE_PATH), { recursive: true });
+        writeFileSync(PATCH_STATE_PATH, JSON.stringify(obj, null, 2) + '\n');
+    } catch {}
+}
+
+function getInstalledGraphifyVersion() {
+    const py = graphifyPython();
+    if (!py) return null;
+    const r = spawnSync(py, ['-c', `from importlib.metadata import version; print(version('graphifyy'))`], { encoding: 'utf8' });
+    return r.status === 0 ? r.stdout.trim() : null;
+}
 
 const PATCH_VERSION = 1;
 const MARKER = `# gfleet-patched: graphify-repo-filter v${PATCH_VERSION}`;
@@ -187,13 +214,43 @@ export function applyPatch({ verbose = true } = {}) {
 
     let src = readFileSync(status.path, 'utf8');
 
-    // Backup once per machine. Subsequent patches don't overwrite the backup
-    // so we always have the as-installed graphify available.
+    // Backup policy:
+    //   - Only write the backup if the file is currently UNPATCHED (zero
+    //     hunks applied). After a `gfleet patch revert` the file should be
+    //     unpatched, so a fresh patch+revert cycle keeps the original intact.
+    //   - If hunks are already applied (state == 'partial' or 'patched'),
+    //     leave the existing backup alone — overwriting would lose the
+    //     original.
+    //   - If the installed graphifyy version differs from what was recorded
+    //     when the backup was created, invalidate it and re-take a fresh
+    //     backup (the prior backup belongs to a different graphifyy version
+    //     and is no longer useful as a "revert to as-installed" source).
     const backupPath = `${status.path}.gfleet-orig`;
-    if (!existsSync(backupPath)) {
-        copyFileSync(status.path, backupPath);
-        if (verbose) log.info(`  backup: ${backupPath}`);
+    const installedVer = getInstalledGraphifyVersion();
+    const state = readPatchState();
+    const stateForPath = state[status.path] || {};
+    const versionMismatch = stateForPath.graphifyy_version &&
+                            installedVer &&
+                            stateForPath.graphifyy_version !== installedVer;
+    if (versionMismatch && existsSync(backupPath)) {
+        log.warn(`  backup is from graphifyy ${stateForPath.graphifyy_version}; installed is ${installedVer} — invalidating and re-taking.`);
+        try { copyFileSync(status.path, backupPath); } catch {}  // overwrite (current is unpatched at this point if status.applied===0)
+    } else if (!existsSync(backupPath)) {
+        if (status.applied === 0) {
+            copyFileSync(status.path, backupPath);
+            if (verbose) log.info(`  backup: ${backupPath}`);
+        } else {
+            // No backup AND already-partly-patched — best-effort note; we
+            // can't reconstruct the original. Continue patching anyway.
+            log.warn(`  no backup at ${backupPath} but file is partly patched — proceeding without writing backup`);
+        }
     }
+    // Record provenance of the backup (or current patch attempt).
+    state[status.path] = {
+        graphifyy_version: installedVer,
+        last_apply_at: new Date().toISOString(),
+    };
+    writePatchState(state);
 
     for (const hunk of PATCHES) {
         if (src.includes(hunk.check)) continue;  // already applied
@@ -225,6 +282,17 @@ export function revertPatch() {
         return false;
     }
     copyFileSync(backupPath, status.path);
+    // Keep the backup file in place after revert (so a subsequent re-apply
+    // doesn't try to back up an already-reverted file). Record the revert
+    // event in patch-state.json so we can detect upgrade-via-`uv tool
+    // upgrade graphifyy` and invalidate the backup on the next apply.
+    const state = readPatchState();
+    state[status.path] = {
+        ...(state[status.path] || {}),
+        graphifyy_version: getInstalledGraphifyVersion(),
+        last_revert_at: new Date().toISOString(),
+    };
+    writePatchState(state);
     log.ok(`reverted ${status.path} from backup`);
     return true;
 }

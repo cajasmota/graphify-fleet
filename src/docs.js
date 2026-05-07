@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, statSy
 import { join, dirname, basename, resolve, relative } from 'node:path';
 import { intro, outro, text, confirm, isCancel, cancel, note } from '@clack/prompts';
 import {
-    HOME, FLEET_STATE_DIR, ensureDir, readJson, writeJson, log, expandPath,
+    HOME, FLEET_STATE_DIR, GROUPS_DIR, ensureDir, readJson, writeJson, log, expandPath,
     loadConfig, listRegistered, resolveConfigArg, die,
 } from './util.js';
 
@@ -269,15 +269,105 @@ function atomicWrite(p, body) {
 // Find sections in a metadata.json whose sources include `relPath`.
 // Schema (per skills/generate-docs/prompts/03-overview.md):
 //   { files: { "<doc-path>": { sources: [{ path, sha }, ...] } } }
-function findSectionsForFile(metadata, relPath) {
+//
+// Phase 2: when no metadata match is found, optionally consult the merged
+// group graph (loaded lazily, cached per `marksStale` invocation) to map a
+// changed source file → graph node → its containing community / god-node →
+// any doc section that references that node. Returns sections with reason
+// strings like "graph-derived: <node-name>".
+function findSectionsForFile(metadata, relPath, graphCtx = null, repoDocsDir = null) {
     const out = [];
     const files = metadata?.files;
-    if (!files || typeof files !== 'object') return out;
-    for (const [docPath, entry] of Object.entries(files)) {
-        const sources = entry?.sources;
-        if (!Array.isArray(sources)) continue;
-        if (sources.some(s => s && s.path === relPath)) out.push({ docPath, sources: sources.map(s => s.path) });
+    if (files && typeof files === 'object') {
+        for (const [docPath, entry] of Object.entries(files)) {
+            const sources = entry?.sources;
+            if (!Array.isArray(sources)) continue;
+            if (sources.some(s => s && s.path === relPath)) {
+                out.push({ docPath, sources: sources.map(s => s.path), reason: 'metadata' });
+            }
+        }
     }
+    if (out.length > 0) return out;
+
+    // -- Phase 2 graph-aware fallback --
+    if (graphCtx && repoDocsDir && existsSync(repoDocsDir)) {
+        const graph = graphCtx.load();  // memoized, may be null
+        if (graph && Array.isArray(graph.nodes)) {
+            const matchingNodes = graph.nodes.filter(n => {
+                const sf = n.source_file || n.sourceFile || n.file;
+                return sf === relPath;
+            });
+            if (matchingNodes.length === 0) return out;
+            // For each match: find god-node ancestors (via containment edges).
+            const godNames = new Set();
+            const containment = (graph.links || graph.edges || []).filter(
+                e => (e.relation || e.type) === 'contains' || (e.relation || e.type) === 'contained_by'
+            );
+            for (const n of matchingNodes) {
+                godNames.add(n.label || n.name || n.id);
+                // Walk up containment edges (bounded to 3 hops; cycles ignored).
+                let frontier = [n.id ?? n.label];
+                const seen = new Set(frontier);
+                for (let hop = 0; hop < 3 && frontier.length; hop++) {
+                    const next = [];
+                    for (const id of frontier) {
+                        for (const e of containment) {
+                            const child = e.target ?? e.to;
+                            const parent = e.source ?? e.from;
+                            const isContainsEdge = (e.relation || e.type) === 'contains';
+                            if (isContainsEdge && child === id && !seen.has(parent)) {
+                                seen.add(parent); next.push(parent);
+                                const pn = graph.nodes.find(x => (x.id ?? x.label) === parent);
+                                if (pn) godNames.add(pn.label || pn.name || pn.id);
+                            } else if (!isContainsEdge && parent === id && !seen.has(child)) {
+                                seen.add(child); next.push(child);
+                                const cn = graph.nodes.find(x => (x.id ?? x.label) === child);
+                                if (cn) godNames.add(cn.label || cn.name || cn.id);
+                            }
+                        }
+                    }
+                    frontier = next;
+                }
+            }
+            // For each god-name, find docs that cite it via [name] or in
+            // ## Endpoints / ## Methods sections. Cap to limit IO.
+            const docFiles = listDocFiles(repoDocsDir, 200);
+            for (const docPath of docFiles) {
+                let body;
+                try { body = readFileSync(docPath, 'utf8'); } catch { continue; }
+                for (const name of godNames) {
+                    if (!name) continue;
+                    const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const re = new RegExp(`\\[${escaped}\\]|^##\\s+(Endpoints|Methods)[\\s\\S]*?\\b${escaped}\\b`, 'm');
+                    if (re.test(body)) {
+                        const rel = docPath.startsWith(repoDocsDir + '/') ? docPath.slice(repoDocsDir.length + 1) : docPath;
+                        out.push({ docPath: rel, sources: [relPath], reason: `graph-derived: ${name}` });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// List all .md files under a docs dir up to `cap` entries (to bound IO when
+// the doc tree is large).
+function listDocFiles(dir, cap = 200) {
+    const out = [];
+    function walk(d) {
+        if (out.length >= cap) return;
+        let entries;
+        try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+            if (out.length >= cap) return;
+            if (e.name.startsWith('.')) continue;
+            const full = join(d, e.name);
+            if (e.isDirectory()) walk(full);
+            else if (e.isFile() && e.name.endsWith('.md')) out.push(full);
+        }
+    }
+    walk(dir);
     return out;
 }
 
@@ -355,6 +445,88 @@ async function readStdinLines() {
     });
 }
 
+// Parse "4h", "30m", "120s", "3600" into seconds. Default 4 hours.
+function parseTtl(ttl) {
+    if (!ttl) return 4 * 3600;
+    const m = String(ttl).trim().match(/^(\d+)\s*([smhd]?)$/);
+    if (!m) return 4 * 3600;
+    const n = parseInt(m[1], 10);
+    const unit = m[2] || 's';
+    if (unit === 's') return n;
+    if (unit === 'm') return n * 60;
+    if (unit === 'h') return n * 3600;
+    if (unit === 'd') return n * 86400;
+    return n;
+}
+
+// Workspace identifier for silenced-session entries. We key on the
+// current working directory so a "silence" issued in one project doesn't
+// leak into another. This is intentionally per-cwd, not per-IDE.
+function workspaceId() {
+    return process.cwd();
+}
+
+function silencedSessionsPath(group) {
+    return join(cacheDir(group), 'silenced-sessions.json');
+}
+
+export async function docsSilence(arg, { ttl = '4h' } = {}) {
+    const r = resolveConfigArg(arg);
+    if (r.kind !== 'one') die('docs silence takes a single group: gfleet docs silence <group> [--ttl 4h]');
+    const cfg = loadConfig(r.config);
+    const p = silencedSessionsPath(cfg.group);
+    const ttlSec = parseTtl(ttl);
+    let obj = { sessions: [] };
+    if (existsSync(p)) {
+        try { obj = readJson(p); } catch { obj = { sessions: [] }; }
+    }
+    obj.sessions = (obj.sessions || []).filter(s => {
+        // Drop expired entries while we're here.
+        const start = Date.parse(s.started_at);
+        if (!Number.isFinite(start)) return false;
+        return (Date.now() - start) / 1000 < (s.ttl_seconds || 0);
+    });
+    obj.sessions.push({
+        workspace: workspaceId(),
+        started_at: new Date().toISOString(),
+        ttl_seconds: ttlSec,
+    });
+    ensureDir(dirname(p));
+    writeJson(p, obj);
+    log.ok(`silenced stale-doc prompts for ${cfg.group} (workspace: ${workspaceId()}, ttl: ${ttl})`);
+}
+
+export async function docsUnsilence(arg) {
+    const r = resolveConfigArg(arg);
+    if (r.kind !== 'one') die('docs unsilence takes a single group: gfleet docs unsilence <group>');
+    const cfg = loadConfig(r.config);
+    const p = silencedSessionsPath(cfg.group);
+    if (!existsSync(p)) { log.info('no silenced sessions for this group'); return; }
+    let obj;
+    try { obj = readJson(p); } catch { log.warn('silenced-sessions file unreadable; removing'); try { unlinkSync(p); } catch {} return; }
+    const ws = workspaceId();
+    const before = (obj.sessions || []).length;
+    obj.sessions = (obj.sessions || []).filter(s => s.workspace !== ws);
+    const after = obj.sessions.length;
+    if (after === 0) { try { unlinkSync(p); } catch {} }
+    else writeJson(p, obj);
+    log.ok(`removed ${before - after} silenced-session entry/entries for workspace ${ws}`);
+}
+
+export async function docsClearStale(arg) {
+    const r = resolveConfigArg(arg);
+    if (r.kind !== 'one') die('docs clear-stale takes a single group: gfleet docs clear-stale <group>');
+    const cfg = loadConfig(r.config);
+    let cleared = 0;
+    for (const repo of cfg.repos) {
+        const stale = join(repo.path, 'docs', '.stale.md');
+        const cacheJson = join(cacheDir(cfg.group), repo.slug, 'stale.json');
+        if (existsSync(stale)) { try { unlinkSync(stale); cleared++; } catch {} }
+        if (existsSync(cacheJson)) { try { unlinkSync(cacheJson); } catch {} }
+    }
+    log.ok(`cleared stale markers for ${cleared} repo(s) in group '${cfg.group}'`);
+}
+
 export async function marksStale({ group, hook = 'post-commit', range = null, repoFilter = null, lines = null }) {
     if (!group) die('docs mark-stale: --group <name> required');
     const reg = listRegistered();
@@ -372,33 +544,92 @@ export async function marksStale({ group, hook = 'post-commit', range = null, re
 
     const updatedAt = new Date().toISOString();
 
+    // Per-call cache: load the merged group graph at most once. Used for
+    // Phase 2 graph-aware mapping of files not present in metadata.json.
+    // Test scenarios for monorepo longest-prefix match (in code form):
+    //   modules registered: 'packages/api/v2', 'packages/api'
+    //   changed:            'packages/api/v2/src/foo.py'
+    //   expected:           the v2 module wins (longer match).
+    //
+    //   modules registered: 'packages/api', 'packages/api-utils'
+    //   changed:            'packages/api/src/foo.py'   -> api wins
+    //   changed:            'packages/api-utils/x.py'   -> api-utils wins
+    //   (boundary: we require the next char after the prefix to be '/' so
+    //    'packages/api' does NOT swallow 'packages/api-utils').
+    const groupGraphPath = join(GROUPS_DIR, `${group}.json`);
+    let _graphCached = undefined;  // undefined = not loaded; null = load failed
+    const graphCtx = {
+        load() {
+            if (_graphCached !== undefined) return _graphCached;
+            if (!existsSync(groupGraphPath)) { _graphCached = null; return null; }
+            try { _graphCached = readJson(groupGraphPath); }
+            catch { _graphCached = null; }
+            return _graphCached;
+        },
+    };
+
+    // Longest-prefix monorepo match: for each changed file, find the
+    // registered repo (in cfg.repos) whose monorepo subdir is the LONGEST
+    // matching prefix. Standalone repos have an empty subdir and only ever
+    // match files relative to their own root (which is what the standard
+    // git-diff format gives us when run inside that repo).
+    //
+    // Build, for monorepo modules only, the list of (subdir, repo) pairs
+    // sorted by subdir length descending, grouped by monorepoRoot — files
+    // from a diff are relative to that monorepo's git root.
+    const monoModulesByRoot = new Map();  // monorepoRoot -> [{ subdir, repo }]
+    for (const r of cfg.repos) {
+        if (!r.monorepoRoot) continue;
+        const subdir = relative(r.monorepoRoot, r.path);
+        if (!subdir || subdir === '.') continue;
+        const list = monoModulesByRoot.get(r.monorepoRoot) || [];
+        list.push({ subdir, repo: r });
+        monoModulesByRoot.set(r.monorepoRoot, list);
+    }
+    for (const list of monoModulesByRoot.values()) {
+        list.sort((a, b) => b.subdir.length - a.subdir.length);  // longest first
+    }
+
+    // For each repo: bucket changed files. For monorepo modules we use the
+    // sorted (longest-first) list to ensure the most-specific subdir wins.
+    const filesPerRepoSlug = new Map();
+    for (const r of cfg.repos) filesPerRepoSlug.set(r.slug, []);
+
+    for (const f of changed) {
+        // Try monorepo modules first (longest-prefix). For each monorepo
+        // root we have a sorted list — pick the FIRST module whose subdir is
+        // a path-prefix of `f`.
+        let assigned = false;
+        for (const list of monoModulesByRoot.values()) {
+            for (const { subdir, repo } of list) {
+                if (f === subdir || f.startsWith(subdir + '/')) {
+                    if (filesPerRepoSlug.has(repo.slug)) {
+                        const rel = f === subdir ? '' : f.slice(subdir.length + 1);
+                        filesPerRepoSlug.get(repo.slug).push(rel);
+                    }
+                    assigned = true;
+                    break;
+                }
+            }
+            if (assigned) break;
+        }
+        if (assigned) continue;
+        // Standalone repos: the diff is repo-relative inside that repo's git
+        // root, so just push to every standalone repo. (Hooks fire per-git-
+        // root — only the relevant standalone repo's hook is invoking us.)
+        for (const r of cfg.repos) {
+            if (r.monorepoRoot) continue;
+            filesPerRepoSlug.get(r.slug).push(f);
+        }
+    }
+
     for (const r of cfg.repos) {
         if (repoFilter && r.slug !== repoFilter) continue;
 
         const repoPath = r.path;
         if (!existsSync(repoPath)) continue;
 
-        // Bucket changed files by whether they live inside this repo.
-        // For monorepo modules, repoPath is the module dir, but the diff comes
-        // from the monorepoRoot — strip the module prefix.
-        const moduleRoot = r.monorepoRoot || repoPath;
-        const repoRel = (f) => {
-            // f is given relative to git root (= moduleRoot for monorepos).
-            // For standalone repos, moduleRoot === repoPath, so the diff is
-            // already repo-relative.
-            if (!r.monorepoRoot) return f;
-            const moduleSubdir = relative(r.monorepoRoot, repoPath);
-            if (!moduleSubdir || moduleSubdir === '.') return f;
-            // Only consider files under the module subdir.
-            if (!f.startsWith(moduleSubdir + '/')) return null;
-            return f.slice(moduleSubdir.length + 1);
-        };
-
-        const inRepo = [];
-        for (const f of changed) {
-            const rel = repoRel(f);
-            if (rel !== null) inRepo.push(rel);
-        }
+        const inRepo = filesPerRepoSlug.get(r.slug) || [];
         if (!inRepo.length) continue;
 
         const docsDir = join(repoPath, 'docs');
@@ -419,7 +650,9 @@ export async function marksStale({ group, hook = 'post-commit', range = null, re
         const sectionMap = new Map(); // docPath -> { sources: Set<string> }
         const untracked = [];
         for (const rel of inRepo) {
-            const matches = metadata ? findSectionsForFile(metadata, rel) : [];
+            // Phase 1 (metadata) + Phase 2 (graph-aware) hybrid. The graph
+            // lookup is gated on metadata-miss inside findSectionsForFile.
+            const matches = findSectionsForFile(metadata, rel, graphCtx, docsDir);
             if (matches.length === 0) {
                 untracked.push(rel);
                 continue;
