@@ -44,6 +44,16 @@ The wizard discovers your repos, auto-detects each stack, writes `~/configs/<gro
 
 Day-to-day, you talk to your IDE agent. The agent surfaces what needs attention.
 
+### Monorepos (one extra step)
+
+The wizard registers each git repo as a unit — fine for polyrepo setups. If a registered repo is a monorepo (`pnpm-workspace.yaml`, npm workspaces, Nx, turbo, Lerna, or 2+ subdirs with their own `package.json` / `pyproject.toml` / `go.mod`), pick which packages get indexed:
+
+```bash
+gfleet monorepo add <group> <path-to-monorepo>
+```
+
+Interactive multiselect with detected stacks + LOC estimates. Hooks and the merge driver stay at the monorepo root (one `.git`); each selected package becomes its own graph node in the group. See [`docs/cli/monorepo.md`](docs/cli/monorepo.md).
+
 ---
 
 ## The few commands you'll actually run
