@@ -15,6 +15,12 @@ const CLAUDE_SKILLS_DIR  = join(HOME, '.claude', 'skills', SKILL_NAME);
 const CLAUDE_CMD_FILE    = join(HOME, '.claude', 'commands', `${SKILL_NAME}.md`);
 const WINDSURF_SKILL_DIR = join(HOME, '.codeium', 'windsurf', 'skills', SKILL_NAME);
 
+// extend-convention skill (companion to generate-docs)
+const EXTEND_SKILL_NAME = 'extend-convention';
+const EXTEND_SKILL_SRC  = join(ROOT_DIR, 'skills', EXTEND_SKILL_NAME);
+const EXTEND_CLAUDE_DIR = join(HOME, '.claude', 'skills', EXTEND_SKILL_NAME);
+const EXTEND_WINDSURF_DIR = join(HOME, '.codeium', 'windsurf', 'skills', EXTEND_SKILL_NAME);
+
 function copyDir(src, dst) {
     cpSync(src, dst, { recursive: true });
 }
@@ -67,6 +73,17 @@ export function skillsInstall() {
     }
     if (workflowCount > 0) log.ok(`Windsurf workflows: ${workflowCount} repo(s) updated`);
 
+    // 5. extend-convention skill (companion)
+    if (existsSync(EXTEND_SKILL_SRC)) {
+        if (existsSync(EXTEND_CLAUDE_DIR))   rmSync(EXTEND_CLAUDE_DIR,   { recursive: true, force: true });
+        if (existsSync(EXTEND_WINDSURF_DIR)) rmSync(EXTEND_WINDSURF_DIR, { recursive: true, force: true });
+        ensureDir(dirname(EXTEND_CLAUDE_DIR));
+        ensureDir(dirname(EXTEND_WINDSURF_DIR));
+        cpSync(EXTEND_SKILL_SRC, EXTEND_CLAUDE_DIR, { recursive: true });
+        cpSync(EXTEND_SKILL_SRC, EXTEND_WINDSURF_DIR, { recursive: true });
+        log.ok(`extend-convention skill installed (Claude Code + Windsurf)`);
+    }
+
     log.say('');
     log.head('patching graphify (repo_filter parameter on MCP tools)');
     applyGraphifyPatch();
@@ -92,6 +109,14 @@ export function skillsUninstall() {
     if (existsSync(WINDSURF_SKILL_DIR)) {
         rmSync(WINDSURF_SKILL_DIR, { recursive: true, force: true });
         log.info(`removed ${WINDSURF_SKILL_DIR}`);
+    }
+    if (existsSync(EXTEND_CLAUDE_DIR)) {
+        rmSync(EXTEND_CLAUDE_DIR, { recursive: true, force: true });
+        log.info(`removed ${EXTEND_CLAUDE_DIR}`);
+    }
+    if (existsSync(EXTEND_WINDSURF_DIR)) {
+        rmSync(EXTEND_WINDSURF_DIR, { recursive: true, force: true });
+        log.info(`removed ${EXTEND_WINDSURF_DIR}`);
     }
 
     // remove workflow files from registered repos

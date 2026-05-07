@@ -12,6 +12,7 @@ import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
 import { onboard } from './onboard.js';
+import { conventionsList, conventionsAdd, conventionsRemove } from './conventions.js';
 
 const VERSION = '0.2.0';
 
@@ -44,6 +45,12 @@ function help() {
     log.say('  docs init-cli <group>               headless CLI Q&A for docs config (no LLM)');
     log.say('                                       — prefer /generate-docs --setup-only in your IDE');
     log.say('                                         which seeds answers from the codebase');
+    log.say('');
+    log.say('CONVENTIONS (extend the generate-docs skill)');
+    log.say('  conventions list                show built-in + user-added stack conventions');
+    log.say('  conventions add [--name X]      interactive: create stub for a new stack, then');
+    log.say('                                  run /extend-convention in your IDE to fill it in');
+    log.say('  conventions remove              remove a user-added convention (interactive)');
     log.say('');
     log.say('GRAPHIFY PATCH (local)');
     log.say('  patch graphify              apply repo_filter parameter patch (idempotent)');
@@ -167,6 +174,20 @@ export async function main(argv) {
                     case 'update':    skillsUpdate(); break;
                     case 'status':    skillsStatus(); break;
                     default: die('usage: gfleet skills {install|uninstall|update|status}');
+                }
+                break;
+            }
+            case 'conventions': {
+                const sub = args[0];
+                const nameIdx = args.indexOf('--name');
+                const name = nameIdx >= 0 ? args[nameIdx + 1] : undefined;
+                const baseIdx = args.indexOf('--base');
+                const base = baseIdx >= 0 ? args[baseIdx + 1] : undefined;
+                switch (sub) {
+                    case 'list':   conventionsList(); break;
+                    case 'add':    await conventionsAdd({ name, base }); break;
+                    case 'remove': await conventionsRemove({ name }); break;
+                    default: die('usage: gfleet conventions {list|add|remove}');
                 }
                 break;
             }

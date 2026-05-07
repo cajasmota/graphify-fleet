@@ -92,14 +92,22 @@ After reading `prompts/01-inventory.md`, you must determine the repo's stack (th
 ```
 conventions/
 ├── django.md           ← Python+Django specifically
+├── fastapi.md          ← FastAPI (use this instead of python-generic when applicable)
 ├── python-generic.md   ← Python without Django
 ├── react.md            ← React (Vite, Next, CRA)
 ├── react-native.md     ← Expo / RN
+├── vue.md              ← Vue (Nuxt, Vite-Vue, Quasar)
+├── sveltekit.md        ← SvelteKit / Svelte
+├── flutter.md          ← Flutter / Dart
+├── rails.md            ← Ruby on Rails
+├── spring.md           ← Spring Boot (Java / Kotlin)
 ├── go.md
 ├── infra-terraform.md
 ├── infra-cdk.md
 └── generic.md          ← fallback
 ```
+
+If your stack isn't here yet, run `gfleet conventions add` to draft a new one (interactive, AI-assisted via the `extend-convention` skill).
 
 The convention file tells you:
 - What "module" means in this stack
