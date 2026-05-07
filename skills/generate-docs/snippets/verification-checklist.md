@@ -22,32 +22,38 @@ Before saving any `.md` output:
 
 ---
 
-## `modules/<name>/api/<class>.md` — per-ViewSet/controller
+## `modules/<name>/api/<class>.md` — per-ViewSet/controller (Swagger-card format)
 
 After writing this file, verify:
 
-- [ ] **Action inventory present** at top, listing every public method/action on the class as a checklist
-- [ ] **Every item in the action inventory has a corresponding section below** (count match)
-- [ ] For each endpoint section:
-  - [ ] HTTP method + path in the heading
-  - [ ] Auth/permission stated
-  - [ ] Path/query params listed (each with type, required/optional, what happens if absent, whether it changes execution path)
-  - [ ] Request body documented if applicable (JSON example + per-field validation)
-  - [ ] **Alternate flows** section: any param combination causing fundamentally different behaviour? (or explicit "none — single flow")
-  - [ ] **Preconditions/gating** section: model-state conditions for the endpoint to behave as described (or explicit "none")
-  - [ ] **Response 2xx** with example
-  - [ ] **Response 4xx/5xx** listed (when params missing, records don't exist, validation fails)
-  - [ ] **Side effects** documented if any (related record creation, email sends, signal fires, cache invalidations, queue puts)
-  - [ ] Handler code reference with line number
-  - [ ] Cross-repo callers from merged graph (mobile/frontend) — at least attempted, either listed or noted as none
-- [ ] **R5 non-triviality questions** answered for each endpoint (read code, not guessed):
-  - [ ] What filters the queryset? (any business condition documented)
-  - [ ] What are counter/aggregation semantics? (units explicit if non-obvious)
-  - [ ] What does this write action do beyond saving? (side effects)
-  - [ ] Is there a fallback or dual-path strategy? (documented if yes)
-  - [ ] Are there non-obvious parameter interactions? (documented if yes)
-- [ ] Mermaid sequence diagram for any endpoint orchestrating ≥3 collaborators
-- [ ] **No endpoint summarised as a one-liner unless the code itself is genuinely a one-liner**
+- [ ] **File-level summary table** present (Source / Mounted at / Auth / Cross-repo callers) — single source for cross-repo "no callers" so it doesn't repeat per-action
+- [ ] **Action TOC** at the top: navigable table with method emoji + path link + at-a-glance column. Every action MUST have a section below (count match)
+- [ ] For each endpoint card:
+  - [ ] Heading uses method emoji: `### 🟢 GET \`/path\`` (🟢 GET, 🟡 POST, 🔵 PUT, 🟣 PATCH, 🔴 DELETE, ⚪ HEAD/OPTIONS)
+  - [ ] One-line summary in a blockquote immediately after the heading
+  - [ ] **Auth** stated, always visible (NOT inside `<details>`)
+  - [ ] `<details><summary>📋 Parameters (N)</summary>` table when params exist
+  - [ ] `<details><summary>📥 Request body</summary>` when applicable: JSON example + validation rules table
+  - [ ] `<details><summary>📤 Response 2xx</summary>` JSON example
+  - [ ] `<details><summary>⚠️ Errors</summary>` table: status / when / body (only if any non-200 documentable; skip block if truly none)
+  - [ ] `<details open><summary>⚙️ How it works</summary>` — **always present, open by default**, plain natural-language walkthrough
+  - [ ] `<details><summary>📦 Side effects</summary>` only when there ARE side effects (skip block for read-only endpoints)
+  - [ ] `:::tip Source` block: handler line ref + per-action cross-repo callers (only if any)
+  - [ ] `---` separator after the card
+- [ ] **"How it works" depth matches R5 YES-count**:
+  - [ ] 0 YES → 1 sentence
+  - [ ] 1 YES → 1 paragraph (2-4 sentences)
+  - [ ] 2-3 YES → multi-paragraph walkthrough
+  - [ ] 4+ YES → multi-paragraph + mermaid sequenceDiagram or flowchart
+- [ ] **"How it works" is plain prose, NOT annotated code blocks** — verify no ```python` / `// ` / `# ` comments-explaining-code blocks inside the section
+- [ ] **R5 non-triviality questions** all answered for each endpoint (read code, not guessed):
+  - [ ] queryset filter / scoping logic
+  - [ ] counter / aggregation semantics if non-obvious
+  - [ ] side effects of write actions
+  - [ ] fallback or dual-path strategies
+  - [ ] non-obvious parameter interactions
+- [ ] Mermaid sequenceDiagram if ≥3 side effects OR ≥3 collaborators
+- [ ] **No endpoint summarised as a one-liner unless the code is genuinely one-liner CRUD**
 
 ---
 

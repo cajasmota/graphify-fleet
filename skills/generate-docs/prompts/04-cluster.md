@@ -16,11 +16,27 @@ You MUST read these snippets at the start of Pass 4 (or when a subagent is dispa
 4. `snippets/cross-link-format.md` — how to write cross-repo links via the merged graph.
 5. `snippets/confidence-markers.md` — when to use 🟡 vs 🔴 (do not conflate).
 
-Templates to use as starting structure:
+Templates to use as starting structure (pick the one matching the artifact you're writing):
 
-- `output-templates/api-class.md` — for any `api/<unit>.md` file
-- `output-templates/module-readme.md` — for `modules/<name>/README.md`
-- (services, models, flows: use the inline templates in this file's "Concrete file templates" section below — same structure as the explicit templates)
+| Artifact you're writing | Template |
+|------------------------|----------|
+| `modules/<name>/index.md` (module homepage) | `output-templates/module-readme.md` |
+| `modules/<name>/api/<class>.md` or `api.<class>.md` | `output-templates/api-class.md` (Swagger-card format) |
+| `modules/<name>/services.md` or `services/<class>.md` | `output-templates/services.md` |
+| `modules/<name>/models.md` | `output-templates/models.md` |
+| `modules/<name>/components.md` (frontend/mobile) | `output-templates/components.md` |
+| `modules/<name>/hooks.md` or `composables.md` | `output-templates/hooks.md` |
+| `modules/<name>/screens.md` or `pages.md` | `output-templates/screens.md` |
+| `cross-cutting/<concern>.md` | `output-templates/cross-cutting.md` |
+| `infra/components/<name>.md` (terraform/cdk) | `output-templates/infra-component.md` |
+| `<group-docs>/product/user-journeys/<journey>.md` (Pass 7) | `output-templates/user-journey.md` |
+| `<group-docs>/decisions/template.md` | `output-templates/adr-template.md` |
+| `<group-docs>/architecture/flows/<flow>.md` (Pass 7) | adapt `user-journey.md` (technical, not user-facing) |
+| Anything else | inline templates below ("Concrete file templates" section) |
+
+The skill ships these templates pre-installed at `~/.claude/skills/generate-docs/output-templates/` and `~/.codeium/windsurf/skills/generate-docs/output-templates/`. Read them before writing.
+
+Stack convention overrides: a stack convention (`conventions/<stack>.md`) may specify a different artifact set or structural rule. The convention always wins over the generic template. Example: a Rails convention might map `api/<class>.md` to `controllers.<name>.md` — same template structure, different filename.
 
 After writing each file, the verification checklist MUST be run before saving. If any item fails: fix in place OR mark 🔴 INCOMPLETE with specific reasons. Never return success on an unverified file.
 
@@ -133,9 +149,35 @@ Results are serialized in parallel via `ThreadPoolExecutor`.
 
 ---
 
-## R6 — Required sections for every endpoint
+## R6 — Swagger-like card format for every endpoint
 
-The current `api.md` template shows only happy-path request/response. That's insufficient. Every endpoint section must include:
+Each endpoint is a **scannable card** with collapsible sections. Inspired by Swagger UI but pure markdown — works on GitHub AND in VitePress with no plugins.
+
+**Heading format**: `### <emoji> <METHOD> \`<path>\`` — the emoji gives a visual scan layer.
+
+| Method | Emoji |
+|--------|-------|
+| GET | 🟢 |
+| POST | 🟡 |
+| PUT | 🔵 |
+| PATCH | 🟣 |
+| DELETE | 🔴 |
+| HEAD/OPTIONS | ⚪ |
+
+**Section layout** (each section a `<details>` block — collapsible on GitHub + VitePress):
+
+- **Summary line** (one line, blockquote, immediately after the heading) — domain-level description with any non-obvious behavior callout.
+- **Auth** — always visible, never collapsed. Always present.
+- `<details><summary>📋 Parameters (N)</summary>` — table: Name / In (path|query|body) / Type / Required / Description.
+- `<details><summary>📥 Request body</summary>` — JSON example + validation table. Skip the whole `<details>` block for GET/DELETE.
+- `<details><summary>📤 Response 2xx</summary>` — JSON example.
+- `<details><summary>⚠️ Errors</summary>` — table: Status / When / Body. Always include if any non-200 response is documentable; skip block if truly none.
+- `<details open><summary>⚙️ How it works</summary>` — **plain natural-language walkthrough**. Always present. **Open by default** because this is the value. See dedicated section below.
+- `<details><summary>📦 Side effects</summary>` — bullet list. Skip the block for read-only endpoints with no side effects.
+- `:::tip Source` (VitePress container; degrades to a plain blockquote on GitHub) — handler line ref + per-action cross-repo callers (only when there ARE callers; otherwise rely on the file-level summary at top).
+- `---` separator after each endpoint.
+
+**Replace** the prior verbose template with this card format. Old template (kept here for reference but DO NOT emit):
 
 ```markdown
 ### <METHOD> <path>
@@ -187,7 +229,79 @@ Per-field validation rules.
 - Frontend: [`<hook>`](<rel-path>#<anchor>)
 ```
 
-If any section truly doesn't apply (e.g. GET endpoints have no request body), omit the heading. Don't write "N/A" placeholders.
+If any section truly doesn't apply, omit the entire `<details>` block. No "N/A" placeholders, no empty headings.
+
+### File-level Cross-repo callers summary
+
+Don't repeat "Cross-repo callers: None — graph search returned no callers" under every endpoint. Instead, put **one summary line at the top of the file** (in the `summary` block — the table that has Source/Mounted at/Auth):
+
+> **Cross-repo callers**: graph search returned no callers from `<other-repo-1>` or `<other-repo-2>` for endpoints in this ViewSet (these endpoints may be unused, called via dynamic URLs, or the merged graph hasn't observed enough call sites yet).
+
+Then per-endpoint, list cross-repo callers ONLY when an action actually has them.
+
+---
+
+## How to write "How it works" — natural language, NOT annotated code
+
+The "How it works" section is the heart of every endpoint card. It explains **what the logic does and why**, in plain English. It's the difference between "documentation a developer can use" and "a list of fields that's not better than the source code."
+
+### What "How it works" should be
+
+A short narrative — typically 1-4 paragraphs — that reads naturally. It walks through the logic the way a senior engineer would explain it to a colleague at a whiteboard. It names the moving parts, describes the branches, surfaces the *intent* behind non-obvious choices, and notes performance/concurrency characteristics where relevant.
+
+### What "How it works" must NOT be
+
+- ❌ **Code blocks with `# comment` annotations.** The source file is one click away (the Source link is right there). Duplicating the code with comments adds noise without information. The reader who wants the code reads the source.
+- ❌ **Line-by-line transcription.** "First it imports X, then it queries Y" is a worse version of reading the file.
+- ❌ **Pseudocode.** If structure matters, use a mermaid sequenceDiagram or flowchart. Otherwise, prose.
+- ❌ **Apologies or filler.** State the facts. No "It's worth noting that..." or "It should be mentioned...".
+
+### Trigger heuristic — depth matches complexity
+
+Always include "How it works." Its length depends on the endpoint's complexity. Count how many R5 non-triviality questions return YES for this endpoint:
+
+| YES count | "How it works" content |
+|-----------|------------------------|
+| 0 | One sentence. e.g. "Standard ORM persist with `ContractSerializer` validation. No additional logic." |
+| 1 | One paragraph (2-4 sentences) explaining the one non-trivial aspect. |
+| 2-3 | Multi-paragraph walkthrough. One paragraph per non-trivial aspect (filter logic, side-effect orchestration, fallback strategy, etc.). |
+| 4+ | Multi-paragraph walkthrough **plus** a mermaid sequenceDiagram (for ≥3 collaborators) or flowchart (for ≥3 branches). |
+
+The verification checklist enforces this depth threshold — a doc with R5 YES count of 3 but a single sentence in "How it works" fails the check.
+
+### Concrete contrast
+
+❌ **Insufficient** (current shallow output):
+> List proposals for the requesting group. The queryset is restricted to contracts that have an active building.
+
+❌ **Wrong** (annotated code — TOO NOISY):
+> ```python
+> # Pre-filter by base conditions
+> base = Contract.objects.filter(building__active=True, ...)
+> # Branch on proposal_status
+> if proposal_status == 'renew':
+>     primary = base.filter(...)
+>     fallback = base.filter(...)
+> ```
+
+✅ **Required** (natural-language walkthrough):
+> When `proposal_status=renew` is passed, the handler builds two parallel querysets and unions them.
+>
+> The primary queryset finds contracts already marked as renewals for the requested year. The fallback queryset catches buildings that fell out of the renewal queue — when their prior contract expired in `year - 1` but no `year` renewal proposal exists yet. Without this fallback, those buildings would silently disappear from the renewal listing.
+>
+> Both querysets share a base filter: the building must be active, the contract isn't `testing_covered_in_contract` (those are bundled into a parent contract, not standalone), and at least one of the contract's devices has active settings. The base filter applies independently to each queryset, then results are merged with `.distinct()` and paginated.
+>
+> Serialization runs in parallel via `ThreadPoolExecutor` because each row's `ContractWithExtrasSerializer` makes JOIN-heavy lookups; parallelism gives a measurable speedup at typical response sizes.
+>
+> For other `proposal_status` values, the query collapses to a single filter on `start_date__year=year` — no fallback, no union.
+
+The reader gets the complete logical model in 5 paragraphs of plain prose. They click the source link only if they want to verify the exact ORM. Most readers won't need to.
+
+### Same prose-walkthrough rule for services and repositories
+
+In `services.md` and `repositories.md` files, every service method's body is also a plain-prose "How it works." For complex queries (joins, aggregations, raw SQL, MongoDB pipelines), describe in plain English: what the query computes, why it's structured this way, indexes/ordering guarantees, race conditions and how they're handled. If the query uses unusual SQL features (CTEs, window functions, recursion), name them and explain their role.
+
+Don't duplicate the SQL or ORM code. Source link is enough.
 
 ---
 

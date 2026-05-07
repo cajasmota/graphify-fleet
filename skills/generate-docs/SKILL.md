@@ -138,15 +138,47 @@ If you're running `--all` and Pass 0 (domain Q&A) is needed, do it ONCE at the s
 
 At the top of Pass 4 (cluster deep dive), check whether the **Agent tool** (subagent dispatch) is available in your runtime.
 
-**If Agent tool is available (Claude Code):**
-- Process clusters in parallel batches of 5 via subagents.
+### On Claude Code: you are the coordinator, not the writer
+
+When the Agent tool is available, **your role is supervisor only**. You plan, dispatch, collect, and validate. **You do NOT write documentation files yourself.** Every doc file is produced by a subagent. This keeps your context lean indefinitely — it doesn't accumulate doc prose, doesn't get distracted by file content details, and remains effective at orchestration even after 50+ files are written across the run.
+
+Strict rules on Claude Code:
+
+- **Pass 0 (domain Q&A)**: you handle. Q&A is your job — you talk to the user.
+- **Pass 1 (inventory)**: you handle. Pure data extraction, no prose. Output is `.inventory.json`.
+- **Pass 2 (plan)**: you handle. Pure decision-making, no prose. Output is `.plan.md`.
+- **Pass 3 (overview)**: dispatch ONE subagent to write `index.md` + `overview.md`. You receive a confirmation message back, NOT the file contents.
+- **Pass 4 (cluster deep dive)**: dispatch ONE subagent per module-artifact pair (or per module). Subagents do all reading + writing. Process in parallel batches of 3-5. You collect summaries.
+- **Pass 5 (reference)**: dispatch ONE subagent per reference page (config / scripts / deployment / dependencies / how-to).
+- **Pass 6 (cross-cutting)**: dispatch ONE subagent per cross-cutting concern.
+- **Pass 7 (group synthesis)**: dispatch ONE subagent per group doc page (or one per cluster of pages).
+- **Pass 8 (cross-link)**: dispatch ONE subagent to walk all newly-written files, verify links, fix anchors, and write `broken-links.md`.
+- **Pass 9 (VitePress config)**: dispatch ONE subagent.
+
+What you (the coordinator) do:
+- Read the prompt files (`prompts/00-09-*.md`) to know what each pass produces.
+- Compute inputs per subagent (which module, which file path, which template, which conventions/<stack>.md).
+- Dispatch via the Agent tool with `subagent_type=general-purpose` (or a more specific type if available).
+- Receive each subagent's one-paragraph summary. Don't ask for full file contents back.
+- Maintain a tally of files written, 🟡 sections, 🔴 sections, save-result count.
+- Print the run summary.
+
+What you do NOT do:
+- Read source code files (subagents do that — you receive their summaries).
+- Write to any `<repo>/docs/` file directly.
+- Pull doc content into your context. Avoid using Read on doc files unless absolutely necessary (e.g. cross-link verification — and even there, dispatch a subagent).
+
+If you find yourself reading a 500-line source file or composing a paragraph for a module README, **stop**. That's a subagent's job. Compute the inputs, dispatch.
+
+**Subagent prompt construction**: each subagent receives the relevant pass prompt file + module/file-specific data + the stack convention + the snippets it must read first. Subagents read those, do the work, write to disk, and return a one-paragraph summary. Subagents don't dispatch further subagents (no recursion).
+
+### On Windsurf (no Agent tool): sequential, single context
 - Each subagent receives one cluster's source files + `prompts/04-cluster.md` + the relevant `conventions/<stack>.md`.
 - Each subagent returns a single finished markdown file.
 - You collect, write to disk, update `docs/.metadata.json`.
 - This keeps your own context lean and parallelizes the slow work.
 
-**If Agent tool is NOT available (Windsurf):**
-- Process clusters sequentially in your own context.
+**On Windsurf: you write directly (no subagent option).** Process passes sequentially in your own context. Same prompt files apply, same templates, same verification checklist — you just do the work yourself instead of dispatching.
 - After every 10 clusters, write progress to `docs/.plan.md` checkpoint section so a partial failure doesn't lose work.
 - Use the same prompt file; just no parallelism.
 
