@@ -27,9 +27,10 @@
 // Pure Node — no MCP coupling, no python invocation. Idempotent. Atomic
 // write (tmp + rename).
 
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const HOME = homedir();
 const GROUPS_DIR_DEFAULT = process.env.GFLEET_GROUPS_DIR
@@ -426,4 +427,404 @@ export function runLabelLinkPass(group, graphsDir, opts = {}) {
     saveCandidates(group, { version: 1, candidates: preservedCands.concat(newCandidates) }, base);
 
     return { links: newLinks.length, candidates: newCandidates.length };
+}
+
+// ============================================================================
+// Phase 3: string-pattern cross-repo match.
+// ----------------------------------------------------------------------------
+// Generic, language-agnostic pass that scans source files referenced by graph
+// nodes for "interesting" string literals (HTTP paths, S3 URIs, Redis keys,
+// Kafka/NATS topics, webhook paths, feature-flag keys), normalizes them, and
+// emits cross-repo links when the same normalized literal appears in 2+ repos.
+//
+// Per-file extraction results are cached at:
+//   <FLEET_STATE>/groups/<group>/string-cache/<repo_tag>/<sha-of-file-path>.json
+// keyed by { mtime_ms, size, version }. Files unchanged since their cache
+// entry are read from cache; changed/new files are re-scanned. At end of pass
+// we evict cache entries for files no longer referenced by any graph node.
+// ============================================================================
+
+const STRING_CACHE_VERSION = 1;
+const STRING_PASS_CONFIDENCE = 0.7;
+const STRING_PAIR_CAP = 6;
+const STRING_LITERAL_MIN = 4;
+const STRING_LITERAL_MAX = 512;
+const STRING_FILE_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB upper bound per file
+
+const FLEET_STATE_DIR_DEFAULT = process.env.GFLEET_STATE_DIR
+    ?? join(HOME, '.graphify-fleet');
+
+export function stringCacheRoot(group, base = FLEET_STATE_DIR_DEFAULT) {
+    return join(base, 'groups', group, 'string-cache');
+}
+
+// Wipe the string-cache directory for a group. Called from `gfleet rebuild`,
+// `gfleet reset`, and `gfleet uninstall` to invalidate cached extractions.
+export function clearStringCache(group, base = FLEET_STATE_DIR_DEFAULT) {
+    const root = stringCacheRoot(group, base);
+    try { rmSync(root, { recursive: true, force: true }); } catch {}
+}
+
+function sha1Hex(s) {
+    return createHash('sha1').update(s).digest('hex');
+}
+
+// ----------------------------------------------------------------------------
+// Pattern catalog (v1). Each entry:
+//   { category, regex, normalize, requires, rejects, role }
+// `requires` runs after regex match; `rejects` runs after normalize. Either
+// returning false discards the candidate. `normalize` returns the canonical
+// form used as the join key across repos.
+// ----------------------------------------------------------------------------
+
+function normalizeHttpPath(s) {
+    let v = s.toLowerCase();
+    if (v.length > 1 && v.endsWith('/')) v = v.slice(0, -1);
+    // Replace path params: {id}, :id, <int:id>, %s, %d
+    v = v.replace(/\{[^}]+\}/g, ':param');
+    v = v.replace(/<[^>]+>/g, ':param');
+    v = v.replace(/\/:[a-zA-Z_][a-zA-Z0-9_]*/g, '/:param');
+    v = v.replace(/%[sd]/g, ':param');
+    return v;
+}
+
+function normalizeRedisKey(s) {
+    let v = s;
+    v = v.replace(/\{[^}]+\}/g, ':param');
+    v = v.replace(/\$\{[^}]+\}/g, ':param');
+    v = v.replace(/%[sd]/g, ':param');
+    v = v.replace(/:{2,}/g, ':');
+    return v;
+}
+
+export const STRING_PATTERNS = [
+    // webhook_path — checked BEFORE http_path so it wins category tagging.
+    {
+        category: 'webhook_path',
+        regex: /^\/(webhooks?|hooks)\/[a-zA-Z0-9_\-./{}<>:%]+$/,
+        normalize: normalizeHttpPath,
+    },
+    {
+        category: 'http_path',
+        regex: /^\/(api|v\d+|public|internal)(\/[a-zA-Z0-9_\-{}.<>:%]+)+\/?$/,
+        normalize: normalizeHttpPath,
+    },
+    {
+        category: 's3_uri',
+        regex: /^s3:\/\/[a-z0-9.\-]+(\/[\S]*)?$/,
+        normalize: (s) => s.toLowerCase(),
+    },
+    {
+        category: 'redis_key',
+        regex: /^[a-z_][a-z0-9_]*(:[a-zA-Z0-9_*{}.\-$%]+){1,5}$/,
+        // Must contain at least one ':'.
+        requires: (s) => s.includes(':'),
+        normalize: normalizeRedisKey,
+    },
+    {
+        category: 'kafka_topic',
+        regex: /^[a-z][a-z0-9._\-]+(\.[a-z0-9._\-]+){1,5}$/,
+        // Must have a dot, no slashes, and not look like a domain or filename.
+        requires: (s) => {
+            if (!s.includes('.')) return false;
+            if (s.includes('/')) return false;
+            const lower = s.toLowerCase();
+            const tldRej = /\.(com|org|io|net|dev|co|gov|edu|xyz|app|ai|json|txt|py|js|ts|tsx|jsx|md|yml|yaml|html|css|sh|log|csv|png|jpg|svg|pdf)$/;
+            if (tldRej.test(lower)) return false;
+            return true;
+        },
+        normalize: (s) => s.toLowerCase(),
+    },
+    {
+        category: 'nats_subject',
+        regex: /^[a-z][a-z0-9._\-*>]+(\.[a-z0-9._\-*>]+){1,5}$/,
+        requires: (s) => {
+            if (!s.includes('.')) return false;
+            if (s.includes('/')) return false;
+            // Only treat as NATS if it actually uses NATS wildcards.
+            if (!(s.includes('*') || s.includes('>'))) return false;
+            return true;
+        },
+        normalize: (s) => s.toLowerCase(),
+    },
+    {
+        category: 'feature_flag',
+        regex: /^(feature|ff|flag)_[a-z0-9_]{2,}$/,
+        normalize: (s) => s.toLowerCase(),
+    },
+];
+
+// Heuristic: is this literal a regex pattern itself? If so, skip — avoids
+// matching dev's regex source strings as if they were live channels.
+function looksLikeRegex(literal) {
+    let metaCount = 0;
+    for (const ch of literal) {
+        if ('^$|?*+()[]{}\\'.includes(ch)) metaCount += 1;
+        if (metaCount >= 3) return true;
+    }
+    return false;
+}
+
+// Extract every quoted string literal from a piece of text. Returns
+// [{ raw, line }] where `raw` excludes outer quotes. Multi-language: scans
+// double-quoted, single-quoted, and backtick-quoted forms. Skips literals on
+// a comment-only line (line starts with `//` or `#` after trim).
+export function extractStringLiterals(text) {
+    if (typeof text !== 'string') return [];
+    const out = [];
+    const lines = text.split(/\r?\n/);
+    // Compile once.
+    const litRe = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
+        litRe.lastIndex = 0;
+        let m;
+        while ((m = litRe.exec(line)) !== null) {
+            const raw = m[1] ?? m[2] ?? m[3];
+            if (raw == null) continue;
+            out.push({ raw, line: i + 1 });
+        }
+    }
+    return out;
+}
+
+function decodeEscapes(s) {
+    // Common escapes only — best effort, language-agnostic.
+    return s.replace(/\\([\\nrt"'`])/g, (_, c) => {
+        switch (c) {
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            default: return c;
+        }
+    });
+}
+
+// Apply the pattern catalog to a single literal, returning all matching
+// extractions (one per matching category — usually 0 or 1).
+export function classifyLiteral(literal) {
+    const out = [];
+    if (typeof literal !== 'string') return out;
+    if (literal.length < STRING_LITERAL_MIN || literal.length > STRING_LITERAL_MAX) return out;
+    if (literal.includes('\n')) return out;
+    if (looksLikeRegex(literal)) return out;
+    for (const pat of STRING_PATTERNS) {
+        if (!pat.regex.test(literal)) continue;
+        if (pat.requires && !pat.requires(literal)) continue;
+        const normalized = pat.normalize(literal);
+        if (!normalized || normalized.length < STRING_LITERAL_MIN) continue;
+        if (pat.rejects && pat.rejects(normalized)) continue;
+        out.push({ category: pat.category, raw: literal, normalized, role: 'neutral' });
+        // Webhook is a tagged subset of http_path — ensure we don't double-emit
+        // both for the same literal.
+        if (pat.category === 'webhook_path' || pat.category === 'http_path') break;
+    }
+    return out;
+}
+
+// Read + scan a single file. Returns { mtime_ms, size, version, extractions }
+// or null if the file can't be read.
+export function scanFileStrings(absPath) {
+    let st;
+    try { st = statSync(absPath); } catch { return null; }
+    if (!st.isFile()) return null;
+    if (st.size > STRING_FILE_MAX_BYTES) {
+        return { mtime_ms: st.mtimeMs, size: st.size, version: STRING_CACHE_VERSION, extractions: [] };
+    }
+    let text;
+    try { text = readFileSync(absPath, 'utf8'); } catch { return null; }
+    const lits = extractStringLiterals(text);
+    const extractions = [];
+    for (const { raw, line } of lits) {
+        const decoded = decodeEscapes(raw);
+        for (const ext of classifyLiteral(decoded)) {
+            extractions.push({ ...ext, line });
+        }
+    }
+    return { mtime_ms: st.mtimeMs, size: st.size, version: STRING_CACHE_VERSION, extractions };
+}
+
+// Cache path for a (group, repo, abs file path) tuple.
+function stringCachePath(group, repoTag, absFilePath, base) {
+    const sha = sha1Hex(absFilePath);
+    return join(stringCacheRoot(group, base), repoTag, `${sha}.json`);
+}
+
+// Get extractions for a file, hitting the cache when fresh.
+function getOrScanCached(group, repoTag, absFilePath, fleetBase) {
+    let st;
+    try { st = statSync(absFilePath); } catch { return null; }
+    if (!st.isFile()) return null;
+    const cachePath = stringCachePath(group, repoTag, absFilePath, fleetBase);
+    if (existsSync(cachePath)) {
+        try {
+            const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+            if (
+                cached
+                && cached.version === STRING_CACHE_VERSION
+                && cached.size === st.size
+                && Math.abs((cached.mtime_ms ?? -1) - st.mtimeMs) < 0.0005
+            ) {
+                return { entry: cached, cachePath, fresh: false };
+            }
+        } catch {}
+    }
+    const fresh = scanFileStrings(absFilePath);
+    if (!fresh) return null;
+    // Persist with origin path for eviction sweeps.
+    const toWrite = { ...fresh, abs_path: absFilePath };
+    writeJsonAtomic(cachePath, toWrite);
+    return { entry: toWrite, cachePath, fresh: true };
+}
+
+// Sweep the per-group cache directory and remove entries whose `abs_path` is
+// not in the keep set. Empty repo subdirs are left intact; harmless.
+function evictStaleCache(group, repoTag, keepAbsPaths, fleetBase) {
+    const dir = join(stringCacheRoot(group, fleetBase), repoTag);
+    if (!existsSync(dir)) return 0;
+    let evicted = 0;
+    let entries;
+    try { entries = readdirSync(dir); } catch { return 0; }
+    for (const f of entries) {
+        if (!f.endsWith('.json')) continue;
+        const fp = join(dir, f);
+        let parsed;
+        try { parsed = JSON.parse(readFileSync(fp, 'utf8')); } catch { continue; }
+        const ap = parsed?.abs_path;
+        if (!ap || !keepAbsPaths.has(ap)) {
+            try { unlinkSync(fp); evicted += 1; } catch {}
+        }
+    }
+    return evicted;
+}
+
+// Phase 3 pass: emit `method:"string"` links for shared string literals.
+// Returns { links, candidates, files_scanned, cache_hits }.
+export function runStringLinkPass(group, graphsDir, opts = {}) {
+    const base = opts.base ?? GROUPS_DIR_DEFAULT;
+    const fleetBase = opts.fleetBase ?? FLEET_STATE_DIR_DEFAULT;
+    if (!existsSync(graphsDir)) {
+        if (!existsSync(linksPath(group, base))) {
+            saveLinks(group, { version: 1, links: [] }, base);
+        }
+        return { links: 0, candidates: 0, files_scanned: 0, cache_hits: 0 };
+    }
+    const files = readdirSync(graphsDir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => join(graphsDir, f))
+        .filter(f => { try { return statSync(f).isFile(); } catch { return false; } });
+
+    // (category, normalized) -> [{ repo, file, line, raw }]
+    const index = new Map();
+    let filesScanned = 0;
+    let cacheHits = 0;
+    // repoTag -> Set of absolute file paths still referenced by the graph
+    const keepByRepo = new Map();
+
+    for (const file of files) {
+        const g = readGraph(file);
+        if (!g) continue;
+        // Collect unique source files per repo from this graph.
+        const perRepo = new Map(); // repo -> Set<absPath>
+        for (const [, node] of g.nodes.entries()) {
+            const sf = node?.source_file;
+            if (typeof sf !== 'string' || !sf) continue;
+            const repo = pickRepoTag(node, g.tag);
+            if (!repo) continue;
+            // Only absolute paths are scannable. Relative source_file paths
+            // (which graphify also produces) are skipped — we have no anchor
+            // to resolve them to disk from the graphs-dir alone.
+            if (!sf.startsWith('/')) continue;
+            if (!perRepo.has(repo)) perRepo.set(repo, new Set());
+            perRepo.get(repo).add(sf);
+        }
+        for (const [repo, set] of perRepo.entries()) {
+            if (!keepByRepo.has(repo)) keepByRepo.set(repo, new Set());
+            const keep = keepByRepo.get(repo);
+            for (const abs of set) {
+                keep.add(abs);
+                const got = getOrScanCached(group, repo, abs, fleetBase);
+                if (!got) continue;
+                filesScanned += 1;
+                if (!got.fresh) cacheHits += 1;
+                for (const ext of (got.entry.extractions || [])) {
+                    const k = `${ext.category}|${ext.normalized}`;
+                    if (!index.has(k)) index.set(k, []);
+                    index.get(k).push({ repo, file: abs, line: ext.line, raw: ext.raw, category: ext.category, normalized: ext.normalized });
+                }
+            }
+        }
+    }
+
+    const newLinks = [];
+    const seenLink = new Set();
+    const now = new Date().toISOString();
+
+    for (const [, entries] of index.entries()) {
+        const byRepo = new Map();
+        for (const e of entries) {
+            if (!byRepo.has(e.repo)) byRepo.set(e.repo, []);
+            byRepo.get(e.repo).push(e);
+        }
+        if (byRepo.size < 2) continue;
+        const reps = [...byRepo.values()].map(arr => arr[0]);
+        let emitted = 0;
+        outer:
+        for (let i = 0; i < reps.length; i++) {
+            for (let j = i + 1; j < reps.length; j++) {
+                if (emitted >= STRING_PAIR_CAP) break outer;
+                const a = reps[i], b = reps[j];
+                const sourceFull = `${a.repo}::file::${a.file}`;
+                const targetFull = `${b.repo}::file::${b.file}`;
+                const k = `${sourceFull}|${targetFull}|string_match|string|${a.category}|${a.normalized}`;
+                if (seenLink.has(k)) continue;
+                seenLink.add(k);
+                newLinks.push({
+                    source: sourceFull,
+                    target: targetFull,
+                    relation: 'string_match',
+                    method: 'string',
+                    confidence: STRING_PASS_CONFIDENCE,
+                    channel: a.category,
+                    identifier: a.normalized,
+                    discovered_at: now,
+                    source_locations: [
+                        { file: a.file, line: a.line, raw: a.raw },
+                        { file: b.file, line: b.line, raw: b.raw },
+                    ],
+                });
+                emitted += 1;
+            }
+        }
+    }
+
+    // Method-segregated overwrite for links.
+    const existingLinks = loadLinks(group, base);
+    const preservedLinks = (existingLinks.links || []).filter(l => l && l.method !== 'string');
+    saveLinks(group, { version: 1, links: preservedLinks.concat(newLinks) }, base);
+
+    // Method-segregated overwrite for candidates (string pass has no
+    // candidate band in v1 — confidence is fixed at 0.7 — so simply drop
+    // any prior method:"string" candidate entries to keep the file clean).
+    const existingCands = loadCandidates(group, base);
+    const preservedCands = (existingCands.candidates || []).filter(c => c && c.method !== 'string');
+    if (preservedCands.length !== (existingCands.candidates || []).length) {
+        saveCandidates(group, { version: 1, candidates: preservedCands }, base);
+    }
+
+    // Eviction sweep: drop cache entries for files no longer referenced.
+    let evicted = 0;
+    for (const [repo, keep] of keepByRepo.entries()) {
+        evicted += evictStaleCache(group, repo, keep, fleetBase);
+    }
+
+    return {
+        links: newLinks.length,
+        candidates: 0,
+        files_scanned: filesScanned,
+        cache_hits: cacheHits,
+        evicted,
+    };
 }

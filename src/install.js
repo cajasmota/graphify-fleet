@@ -15,7 +15,7 @@ import {
     ensureGroupGraphsDir, groupGraphsDir, migrateLegacyArtifacts,
 } from './integrations.js';
 import { installWatcher, uninstallWatcher } from './watchers.js';
-import { runImportLinkPass } from './links.js';
+import { runImportLinkPass, clearStringCache } from './links.js';
 
 export async function install(configPath) {
     ensureGraphify();
@@ -167,6 +167,7 @@ export function uninstall(configPath, opts = {}) {
     try { rmSync(groupGraphsDir(cfg.group), { recursive: true, force: true }); } catch {}
     try { rmSync(join(GROUPS_DIR, `${cfg.group}-links.json`), { force: true }); } catch {}
     try { rmSync(join(GROUPS_DIR, `${cfg.group}-link-candidates.json`), { force: true }); } catch {}
+    try { clearStringCache(cfg.group); } catch {}
     removeWindsurfGlobalMcp(cfg.group);
 
     // unregister from registry

@@ -6,10 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-    runImportLinkPass, runLabelLinkPass,
+    runImportLinkPass, runLabelLinkPass, runStringLinkPass,
     loadLinks, saveLinks, linksPath, candidatesPath,
     loadCandidates, saveCandidates,
+    extractStringLiterals, classifyLiteral, scanFileStrings,
+    stringCacheRoot, clearStringCache, STRING_PATTERNS,
 } from '../src/links.js';
+import { utimesSync } from 'node:fs';
 
 function mkTmp() { return mkdtempSync(join(tmpdir(), 'gfleet-links-')); }
 
@@ -359,5 +362,276 @@ test('runLabelLinkPass: suffix stripping — OrderViewSet matches Order', () => 
         const lm = obj.links.filter(l => l.method === 'label_match');
         assert.equal(lm.length, 1, 'suffix-stripped match emitted');
         assert.equal(lm[0].identifier, 'order');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: runStringLinkPass — generic string-pattern cross-repo match.
+// ---------------------------------------------------------------------------
+
+// Build a graph where source_file paths are absolute (so the string scanner
+// can reach them on disk).
+function writeGraphAbs(graphsDir, slug, nodes) {
+    mkdirSync(graphsDir, { recursive: true });
+    const obj = {
+        directed: false, multigraph: false, graph: {},
+        nodes: nodes.map(n => ({ id: n.id, label: n.label ?? n.id, repo: n.repo ?? slug, source_file: n.source_file, file_type: n.file_type ?? 'code' })),
+        links: [],
+    };
+    writeFileSync(join(graphsDir, `${slug}.json`), JSON.stringify(obj));
+}
+
+test('STRING_PATTERNS: catalog matches expected positives and rejects negatives', () => {
+    const cases = [
+        // [literal, expectedCategory or null]
+        ['/api/v1/orders/', 'http_path'],
+        ['/api/v1/orders/{id}/', 'http_path'],
+        ['/v2/inspections/:id/results', 'http_path'],
+        ['/webhooks/stripe/events', 'webhook_path'],
+        ['/hooks/github/push', 'webhook_path'],
+        ['s3://upvate-reports/inspections/', 's3_uri'],
+        ['inspection:123:status', 'redis_key'],
+        ['inspection:{id}:status', 'redis_key'],
+        ['org.upvate.events.inspection.created', 'kafka_topic'],
+        ['org.upvate.events.*.created', 'nats_subject'],
+        ['feature_inspection_v2', 'feature_flag'],
+        ['ff_new_dashboard', 'feature_flag'],
+        // Negatives:
+        ['hello world', null],
+        ['example.com', null],
+        ['/some/local/path/foo.py', null],
+        ['select * from users where id = ?', null],
+        ['readme.md', null],
+        ['short', null],
+        ['^[a-z]+$', null], // regex-looking
+    ];
+    for (const [lit, want] of cases) {
+        const got = classifyLiteral(lit);
+        if (want === null) {
+            assert.equal(got.length, 0, `expected no match for ${JSON.stringify(lit)}, got ${JSON.stringify(got)}`);
+        } else {
+            assert.ok(got.length >= 1, `expected match for ${JSON.stringify(lit)}`);
+            assert.equal(got[0].category, want, `category for ${JSON.stringify(lit)}`);
+        }
+    }
+    // Sanity: catalog has the documented v1 set.
+    const cats = new Set(STRING_PATTERNS.map(p => p.category));
+    for (const c of ['http_path','webhook_path','s3_uri','redis_key','kafka_topic','nats_subject','feature_flag']) {
+        assert.ok(cats.has(c), `catalog missing ${c}`);
+    }
+});
+
+test('extractStringLiterals: skips comment-only lines', () => {
+    const src = [
+        '# /api/v1/orders/',           // python comment — skip
+        'x = "/api/v1/orders/"',       // active code — keep
+        '// /webhooks/stripe/',        // js comment — skip
+        'y = "/webhooks/stripe/"',     // active code — keep
+    ].join('\n');
+    const lits = extractStringLiterals(src).map(l => l.raw);
+    assert.deepEqual(lits.sort(), ['/api/v1/orders/', '/webhooks/stripe/'].sort());
+});
+
+test('scanFileStrings: extracts patterns from a Python-like fixture', () => {
+    const tmp = mkTmp();
+    try {
+        const f = join(tmp, 'sample.py');
+        writeFileSync(f, [
+            'PATH = "/api/v1/orders/"',
+            'BUCKET = "s3://upvate-reports/inspections/"',
+            'KEY = "inspection:%s:status" % i',
+            'TOPIC = "org.upvate.events.inspection.created"',
+            'FLAG = "feature_inspection_v2"',
+            'NOPE = "hello world"',
+        ].join('\n'));
+        const res = scanFileStrings(f);
+        assert.ok(res);
+        const cats = res.extractions.map(e => e.category).sort();
+        assert.deepEqual(cats, ['feature_flag', 'http_path', 'kafka_topic', 'redis_key', 's3_uri']);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: cross-repo http_path match emits one link', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const beFile = join(tmp, 'backend', 'urls.py');
+        const feFile = join(tmp, 'frontend', 'orders.ts');
+        mkdirSync(join(tmp, 'backend'), { recursive: true });
+        mkdirSync(join(tmp, 'frontend'), { recursive: true });
+        writeFileSync(beFile, 'urlpatterns = [path("/api/v1/orders/", view)]');
+        writeFileSync(feFile, 'axios.get("/api/v1/orders/")');
+        writeGraphAbs(graphsDir, 'backend', [
+            { id: 'be1', label: 'urls.py', source_file: beFile, repo: 'backend' },
+        ]);
+        writeGraphAbs(graphsDir, 'frontend', [
+            { id: 'fe1', label: 'orders.ts', source_file: feFile, repo: 'frontend' },
+        ]);
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase: join(tmp, 'fleet') });
+        assert.equal(r.links, 1);
+        const obj = loadLinks('g', tmp);
+        const sm = obj.links.filter(l => l.method === 'string');
+        assert.equal(sm.length, 1);
+        assert.equal(sm[0].channel, 'http_path');
+        assert.equal(sm[0].identifier, '/api/v1/orders');
+        assert.equal(sm[0].relation, 'string_match');
+        assert.equal(sm[0].confidence, 0.7);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: cache reuse on second run + invalidation on mtime change', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const beFile = join(tmp, 'backend', 'urls.py');
+        const feFile = join(tmp, 'frontend', 'orders.ts');
+        mkdirSync(join(tmp, 'backend'), { recursive: true });
+        mkdirSync(join(tmp, 'frontend'), { recursive: true });
+        writeFileSync(beFile, 'PATH = "/api/v1/orders/"');
+        writeFileSync(feFile, 'PATH = "/api/v1/orders/"');
+        writeGraphAbs(graphsDir, 'backend', [{ id: 'be1', label: 'urls.py', source_file: beFile, repo: 'backend' }]);
+        writeGraphAbs(graphsDir, 'frontend', [{ id: 'fe1', label: 'orders.ts', source_file: feFile, repo: 'frontend' }]);
+        const r1 = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r1.cache_hits, 0, 'first run is all fresh');
+        const r2 = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r2.cache_hits, 2, 'second run hits cache for both files');
+        // Bump mtime by writing the file — invalidates cache for that file.
+        const future = new Date(Date.now() + 5000);
+        utimesSync(beFile, future, future);
+        // Also change content so size differs even if mtime resolution is coarse.
+        writeFileSync(beFile, 'PATH = "/api/v1/orders/"\n# touched');
+        const r3 = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r3.cache_hits, 1, 'frontend hits cache, backend rescanned');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: preserves import + label_match entries', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        // Pre-seed import + label_match entries.
+        saveLinks('g', {
+            version: 1,
+            links: [
+                { source: 'a::x', target: 'b::y', relation: 'imports', method: 'import', confidence: 1.0, channel: null, identifier: null, discovered_at: 'past', source_locations: [] },
+                { source: 'a::p', target: 'b::q', relation: 'shared_label', method: 'label_match', confidence: 0.7, channel: null, identifier: 'order', discovered_at: 'past', source_locations: [] },
+            ],
+        }, tmp);
+        const beFile = join(tmp, 'be.py');
+        const feFile = join(tmp, 'fe.ts');
+        writeFileSync(beFile, 'P="/api/v1/orders/"');
+        writeFileSync(feFile, 'P="/api/v1/orders/"');
+        writeGraphAbs(graphsDir, 'a', [{ id: 'be1', source_file: beFile, repo: 'a' }]);
+        writeGraphAbs(graphsDir, 'b', [{ id: 'fe1', source_file: feFile, repo: 'b' }]);
+        runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        const obj = loadLinks('g', tmp);
+        const methods = obj.links.map(l => l.method).sort();
+        assert.deepEqual(methods, ['import', 'label_match', 'string']);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: disjoint string sets emit no links', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const beFile = join(tmp, 'be.py');
+        const feFile = join(tmp, 'fe.ts');
+        writeFileSync(beFile, 'P="/api/v1/orders/"');
+        writeFileSync(feFile, 'P="/api/v1/permits/"');
+        writeGraphAbs(graphsDir, 'a', [{ id: 'be1', source_file: beFile, repo: 'a' }]);
+        writeGraphAbs(graphsDir, 'b', [{ id: 'fe1', source_file: feFile, repo: 'b' }]);
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r.links, 0);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: pattern only on one side -> no link', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const beFile = join(tmp, 'be.py');
+        const feFile = join(tmp, 'fe.ts');
+        writeFileSync(beFile, 'P="/api/v1/orders/"');
+        writeFileSync(feFile, 'msg = "no patterns here at all"');
+        writeGraphAbs(graphsDir, 'a', [{ id: 'be1', source_file: beFile, repo: 'a' }]);
+        writeGraphAbs(graphsDir, 'b', [{ id: 'fe1', source_file: feFile, repo: 'b' }]);
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r.links, 0);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: comment-only literal is not extracted', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const beFile = join(tmp, 'be.py');
+        const feFile = join(tmp, 'fe.ts');
+        writeFileSync(beFile, '# "/api/v1/orders/" is the path we want');
+        writeFileSync(feFile, 'P="/api/v1/orders/"');
+        writeGraphAbs(graphsDir, 'a', [{ id: 'be1', source_file: beFile, repo: 'a' }]);
+        writeGraphAbs(graphsDir, 'b', [{ id: 'fe1', source_file: feFile, repo: 'b' }]);
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r.links, 0, 'commented literal should not match');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: 5 repos sharing one path -> capped at 6 pairwise', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        for (const slug of ['a', 'b', 'c', 'd', 'e']) {
+            const f = join(tmp, `${slug}.py`);
+            writeFileSync(f, 'P="/api/v1/orders/"');
+            writeGraphAbs(graphsDir, slug, [{ id: `${slug}1`, source_file: f, repo: slug }]);
+        }
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        // C(5,2) = 10 but cap is 6.
+        assert.equal(r.links, 6);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('clearStringCache: removes the per-group cache directory', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const f = join(tmp, 'x.py');
+        writeFileSync(f, 'P="/api/v1/orders/"');
+        writeGraphAbs(graphsDir, 'a', [{ id: 'a1', source_file: f, repo: 'a' }]);
+        runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        const root = stringCacheRoot('g', fleetBase);
+        assert.ok(existsSync(root), 'cache dir created');
+        clearStringCache('g', fleetBase);
+        assert.ok(!existsSync(root), 'cache dir removed');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('runStringLinkPass: evicts cache entries for files no longer in graph', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        const f1 = join(tmp, 'a1.py');
+        const f2 = join(tmp, 'a2.py');
+        const fb = join(tmp, 'b.ts');
+        writeFileSync(f1, 'P="/api/v1/orders/"');
+        writeFileSync(f2, 'P="/api/v1/orders/"');
+        writeFileSync(fb, 'P="/api/v1/orders/"');
+        writeGraphAbs(graphsDir, 'a', [
+            { id: 'a1', source_file: f1, repo: 'a' },
+            { id: 'a2', source_file: f2, repo: 'a' },
+        ]);
+        writeGraphAbs(graphsDir, 'b', [{ id: 'b1', source_file: fb, repo: 'b' }]);
+        runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        // Now drop f2 from the graph and re-run -> its cache entry should be evicted.
+        writeGraphAbs(graphsDir, 'a', [{ id: 'a1', source_file: f1, repo: 'a' }]);
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.ok((r.evicted ?? 0) >= 1, 'at least one stale entry evicted');
     } finally { rmSync(tmp, { recursive: true, force: true }); }
 });

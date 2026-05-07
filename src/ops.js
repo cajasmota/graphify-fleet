@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { loadConfig, log, run, readJson, listRegistered, GROUPS_DIR } from './util.js';
 import { installWatcher, uninstallWatcher, watcherStatus } from './watchers.js';
 import { ensureGroupGraphsDir, groupGraphsDir } from './integrations.js';
-import { runImportLinkPass } from './links.js';
+import { runImportLinkPass, runLabelLinkPass, runStringLinkPass, clearStringCache } from './links.js';
 
 function nodeEdgeCounts(graphPath) {
     if (!existsSync(graphPath)) return null;
@@ -79,9 +79,13 @@ export function rebuild(configPath, target = 'all') {
         run('graphify', ['update', '.'], { cwd: r.path, env: { ...process.env, GRAPHIFY_FORCE: '1' }, stdio: 'inherit' });
     }
     const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
+    // rebuild invalidates the string-cache so we re-scan from clean state.
+    try { clearStringCache(cfg.group); } catch {}
     try {
         const n = runImportLinkPass(cfg.group, dir);
-        log.info(`links: ${n} cross-repo edges`);
+        const m = runLabelLinkPass(cfg.group, dir);
+        const s = runStringLinkPass(cfg.group, dir);
+        log.info(`links: ${n} import + ${m.links} label_match + ${s.links} string`);
     } catch (e) { log.warn(`links pass failed: ${e.message}`); }
     log.ok('rebuild complete');
 }
@@ -96,7 +100,12 @@ export function reset(configPath, target = 'all') {
         run('graphify', ['update', '.'], { cwd: r.path, stdio: 'inherit' });
     }
     const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
-    try { runImportLinkPass(cfg.group, dir); } catch {}
+    try { clearStringCache(cfg.group); } catch {}
+    try {
+        runImportLinkPass(cfg.group, dir);
+        runLabelLinkPass(cfg.group, dir);
+        runStringLinkPass(cfg.group, dir);
+    } catch {}
     log.ok(`reset complete — group '${cfg.group}' regenerated from scratch`);
     log.info('for full LLM extraction (docs, wiki, "why" comments) run /graphify . in Claude Code or Windsurf per repo');
 }
@@ -112,7 +121,9 @@ export function remerge(configPath) {
     const dir = ensureGroupGraphsDir(cfg.group, cfg.repos);
     try {
         const n = runImportLinkPass(cfg.group, dir);
-        log.ok(`links pass: ${n} cross-repo edges`);
+        const m = runLabelLinkPass(cfg.group, dir);
+        const s = runStringLinkPass(cfg.group, dir);
+        log.ok(`links pass: ${n} import + ${m.links} label_match + ${s.links} string`);
     } catch (e) { log.warn(`links pass failed: ${e.message}`); }
 }
 
