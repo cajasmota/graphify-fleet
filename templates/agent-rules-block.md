@@ -161,6 +161,46 @@ When NOT to run it:
 - Ephemeral / situational answer (won't apply to future sessions)
 - Trace was incomplete (saving a partial finding propagates the gap)
 
+<!-- gfleet:link-candidates:start v=1 -->
+
+### Cross-repo link candidates — agent-side resolution
+
+The MCP server tracks **link candidates** — cross-repo edges that the deterministic passes (label match, string-pattern match) flagged but couldn't confidently classify. Examples:
+
+- A label appearing in 2+ repos with mid-range TF-IDF rarity (could be a real shared concept or a coincidence)
+- A string literal matching the `kafka_topic` pattern that exists on both sides but might be unrelated
+- A boundary-shaped function (e.g. `fetchOrders`) with no string literal extracted
+
+These live in `~/.graphify/groups/{{group}}-link-candidates.json` until resolved.
+
+**You are the resolver.** When you encounter a candidate touching a node you're already investigating, resolve it opportunistically. The cost is bounded — you've already read the relevant code for the user's actual question.
+
+**How to find them**:
+- `list_link_candidates(repo_filter="{{repo_slug}}")` — candidates touching the current repo
+- `list_link_candidates(channel="http")` — narrow to one channel kind
+- `list_link_candidates(method="string", limit=5)` — pick the top 5 string-match candidates
+
+**How to resolve**:
+- `resolve_link_candidate(candidate_id, decision="confirm", reason="<short rationale>")` — promote to a confirmed cross-repo link
+- `resolve_link_candidate(candidate_id, decision="confirm", override_target="<corrected-repo>::<corrected-id>", reason="...")` — fix the link target while confirming
+- `resolve_link_candidate(candidate_id, decision="reject", reason="<why this isn't a real link>")` — record the rejection so the link pass won't re-emit on next run
+
+**When to resolve**:
+- During `/generate-docs` Pass 8 — the cross-link pass; explicit resolution step (see `prompts/08-cross-link.md`)
+- During normal cross-repo questions — if the user asks "how does mobile X relate to backend Y?" and a candidate connects those nodes, resolve it before answering
+- Opportunistic batching — if you have 5+ minutes of unfilled context after answering, pull `list_link_candidates(limit=10)` and resolve obvious ones
+
+**When NOT to resolve**:
+- Speculative resolution without reading the relevant source — false confirmations corrupt the graph
+- Bulk auto-resolve scripts — each candidate needs eyes on the code
+- Resolving while the user is waiting on an unrelated answer — finish the user's task first
+
+**Resolved entries**:
+- `confirm` — link moves to `~/.graphify/groups/{{group}}-links.json` with method suffix `+resolved` and confidence 1.0; the MCP picks it up on next mtime check
+- `reject` — entry moves to `~/.graphify/groups/{{group}}-link-rejections.json`; subsequent link-pass runs skip it
+
+<!-- gfleet:link-candidates:end -->
+
 ### Quick decision tree
 
 - Repo-local question → `query_graph(question, repo_filter="{{repo_slug}}")` → answer from graph → done

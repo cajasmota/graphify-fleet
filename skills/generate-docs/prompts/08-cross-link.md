@@ -22,6 +22,23 @@ For every link in every doc you just wrote:
 
 ## Steps
 
+### 0. Resolve link candidates
+
+Before validating cross-repo references, work through the candidate queue surfaced by the group MCP server. Candidates are ambiguous cross-repo edges flagged by the deterministic link passes (label match, string-pattern match) — see the `Cross-repo link candidates` section in the per-repo `CLAUDE.md` rules block for the full background.
+
+1. Call `list_link_candidates(repo_filter="<current-repo-slug>", limit=10)` — top-10 candidates touching this repo (sorted by confidence descending).
+2. For each candidate:
+   - Read the source/target nodes' files via `get_node_source` (or fall back to file `Read`).
+   - Decide: real link, coincidence, or wrong-target?
+   - Call `resolve_link_candidate(candidate_id, decision, reason, override_target?)`:
+     - `decision="confirm"` — promote to a confirmed link (method suffix `+resolved`, confidence 1.0).
+     - `decision="confirm"` with `override_target="<repo>::<id>"` — confirm but correct the target.
+     - `decision="reject"` — record the rejection so future link-pass runs skip it.
+3. Repeat with `repo_filter=None` for cross-cutting candidates (links spanning repos other than the current one).
+4. Stop when the queue is empty OR you've resolved 20 candidates this pass (whichever comes first — bounded budget so the pass stays cheap).
+
+Resolutions feed back into the graph immediately (MCP mtime-reload picks them up). Subsequent cross-link queries in steps 1–2 see the freshly confirmed edges as deterministic links.
+
 ### 1. Collect all links
 
 Walk every `.md` file under:

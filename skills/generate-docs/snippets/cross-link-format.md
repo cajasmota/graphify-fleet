@@ -82,3 +82,7 @@ The [order](../../<group_docs>/product/glossary.md#order) is created in `schedul
 ```
 
 Only first occurrence in each file. Skip headings, code, existing links.
+
+## Resolved link candidates
+
+When the link is the result of a resolved candidate (an agent confirmed it via `resolve_link_candidate`), render it identically to a deterministic link — the agent's confirmation graduates it to first-class status. The `+resolved` method suffix is metadata; consumers shouldn't see it.
