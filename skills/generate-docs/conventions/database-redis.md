@@ -1,5 +1,7 @@
 # Stack convention: database-redis
 
+> Graph-searchability: every database-redis doc inherits the universal backtick contract from `_graph-searchability.md`. Key prefixes, RediSearch index names, Lua script names, stream names, channel names, ACL user names, command names — all in backticks every time, including in headings.
+
 ## When to use this convention
 
 Use this convention for repositories whose primary purpose is Redis schema, scripts, or pipelines — not application repos that happen to use Redis as a cache. Typical fits include Lua-script libraries (`scripts/*.lua`, `lua/*.lua`), Redis Stack repos that define RediSearch indexes / RedisJSON document schemas / RedisGraph queries, Redis Streams pipeline repos where the bus itself is the system under documentation, and key-namespace catalog repos that exist to document and standardize key patterns across services.

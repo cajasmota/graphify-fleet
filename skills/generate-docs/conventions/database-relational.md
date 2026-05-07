@@ -1,5 +1,7 @@
 # Stack convention: Relational database
 
+> Graph-searchability: every relational-database doc inherits the universal backtick contract from `_graph-searchability.md`. Table / view / materialized view names, column names, schema names, index names, migration filenames, dbt model names, sqlc query names — all in backticks every time, including in headings.
+
 ## When to use this convention
 
 Use this convention when the repository **is** the database — not an application that talks to one. The source of truth is DDL, migrations, dbt models, sqlc queries, Prisma schemas, or a stored-procedure catalog, and most files in the repo are SQL or schema-as-code artifacts. Typical examples: dbt projects, sqlc projects, Prisma schema-only repos, raw SQL migration repos under Flyway/Liquibase/Atlas/Goose/sqitch/Alembic, and procedure-heavy repos with materialized views and triggers.

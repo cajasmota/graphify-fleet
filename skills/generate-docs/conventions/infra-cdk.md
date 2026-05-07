@@ -1,5 +1,7 @@
 # Stack convention: AWS CDK
 
+> Graph-searchability: every CDK doc inherits the universal backtick contract from `_graph-searchability.md`. App / Stack / Construct class names, AWS resource types (`aws_vpc`, `Bucket`), output names, context keys, file paths — all in backticks every time, including in headings.
+
 Infrastructure as code authored in a real programming language (TypeScript or Python most commonly). Unlike declarative IaC, CDK synthesizes CloudFormation from constructs composed in code, so the documentation has to follow the **code structure** (apps → stacks → constructs) rather than a flat resource map.
 
 ## Module = CDK app OR stack class

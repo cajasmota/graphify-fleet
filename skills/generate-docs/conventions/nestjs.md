@@ -1,5 +1,7 @@
 # Stack convention: NestJS
 
+> Graph-searchability: every NestJS doc inherits the universal backtick contract from `_graph-searchability.md`. `@Module` / `@Controller` / `@Injectable` class names, decorator names, DTO names, guard / pipe / filter class names, file paths — all in backticks every time, including in headings.
+
 NestJS is decorator-driven, modular, and DI-heavy. Although it commonly runs on Express (or Fastify), its structural patterns are very different — document Nest projects with this convention, not `express.md`.
 
 ## Module = `@Module()` class

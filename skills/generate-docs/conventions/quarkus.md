@@ -1,5 +1,7 @@
 # Stack convention: Quarkus / Jakarta EE / MicroProfile
 
+> Graph-searchability: every Quarkus / Jakarta EE / MicroProfile doc inherits the universal backtick contract from `_graph-searchability.md`. JAX-RS resource classes, CDI bean names, JPA entity names, DTO names, channel names, config keys, file paths — all in backticks every time, including in headings.
+
 This convention covers Quarkus, Jakarta EE (WildFly, Open Liberty, Payara), and MicroProfile applications as a single family. They share the same programming model — CDI for beans, JAX-RS for HTTP, MicroProfile Config for configuration, JPA for persistence — even when the runtime differs.
 
 Module homepage is `index.md` (NOT README.md).

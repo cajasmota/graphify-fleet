@@ -1,5 +1,7 @@
 # Stack convention: Python (non-Django, non-FastAPI)
 
+> Graph-searchability: every doc written under this convention inherits the universal backtick contract from `_graph-searchability.md`. Module names, class names, function names, file paths, blueprint names, CLI commands, env vars — all in backticks every time, including in headings.
+
 Use this convention for Flask apps, plain libraries, scripts/CLI tools, data pipelines, and any Python codebase that doesn't fit `django.md` or `fastapi.md`. If Django is detected use `django.md`. If FastAPI is detected use `fastapi.md`.
 
 ## Module discovery

@@ -1,5 +1,6 @@
 <!-- Template: components.md for frontend (React/Vue/Svelte) and mobile (RN/Flutter). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every component name (e.g. `<DashboardShell>` or `DashboardShell`) in backticks every time; symbol-naming headings use the `#### \`<ComponentName>\`` form; every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Module}} — Components

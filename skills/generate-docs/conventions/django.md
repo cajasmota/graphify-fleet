@@ -1,5 +1,7 @@
 # Stack convention: Django (Python)
 
+> Graph-searchability: every Django stack doc inherits the universal backtick contract from `_graph-searchability.md`. Class names (`OrderViewSet`, `Inspection`), service methods, file paths, route paths, settings keys, signal names, env vars — all in backticks every time, including in headings. Read it once before writing any Django artifact.
+
 ## Module = Django app
 
 A "module" is a Django app — a directory with `apps.py` and/or `models.py`, listed in `INSTALLED_APPS`.

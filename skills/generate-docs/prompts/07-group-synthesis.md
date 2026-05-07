@@ -2,6 +2,8 @@
 
 Run only in `--group` mode, and only after per-repo docs exist for all repos in the group.
 
+**Apply `conventions/_graph-searchability.md`**: every endpoint, screen name, service function, hook, repo name, and shared model in backticks every time — this is what makes a journey heading link to the code in every repo it touches. Every fenced code block language-tagged.
+
 ## Your goal
 
 Write the **business-oriented, narrative** documentation at the group level. Same care as per-repo, but the scope is the product, not any single codebase.

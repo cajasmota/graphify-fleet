@@ -19,6 +19,11 @@ Before saving any `.md` output:
 - [ ] All cross-repo links: either resolved with valid anchors, or written without anchor + added to `.cross-link-todo.md`
 - [ ] Last-generated timestamp footer present
 - [ ] At least one save-result was written for non-trivial findings discovered while reading source for this file (or explicit reason why none warranted)
+- [ ] **Graph-searchability** (per `conventions/_graph-searchability.md`):
+  - [ ] Every code symbol named in this doc appears at least once wrapped in backticks (classes, functions, file paths, module/route names, env vars, CLI flags).
+  - [ ] Headings that name a specific code symbol put that symbol in backticks IN the heading text (e.g. `` ### `OrderViewSet` ``, NOT `### OrderViewSet (class)`).
+  - [ ] Every fenced code block carries a language tag (` ```python `, ` ```ts `, ` ```bash `, etc.) — no bare ` ``` ` blocks for real code.
+  - [ ] No bold / italic / quotation marks used as a substitute for backticks on code symbols.
 
 ---
 

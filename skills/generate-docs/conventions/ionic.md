@@ -1,5 +1,7 @@
 # Stack convention: Ionic (Capacitor, Angular/React/Vue)
 
+> Graph-searchability: every Ionic doc inherits the universal backtick contract from `_graph-searchability.md`. `IonPage` screen component names, `IonRouterOutlet` config, Capacitor plugin names (`@capacitor/camera`), platform-branch identifiers, file paths — all in backticks every time, including in headings.
+
 Ionic 7+ is a UI + native-bridge layer that runs on top of Angular, React, or Vue. The underlying framework's conventions still apply for routing, state, and component decomposition; this file describes only the Ionic-specific overlays (IonPage screens, IonRouterOutlet navigation, Capacitor native bridges, platform divergences).
 
 ## Module = feature folder (underlying framework's discovery)

@@ -1,5 +1,7 @@
 # Stack convention: Vue (Nuxt, Vite-Vue, Quasar)
 
+> Graph-searchability: every Vue doc inherits the universal backtick contract from `_graph-searchability.md`. Component names, composable names, Pinia store names, service function names, file paths — all in backticks every time, including in headings.
+
 ## Module = feature folder
 
 Discovery (priority):

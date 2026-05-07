@@ -1,5 +1,7 @@
 # Stack convention: Next.js
 
+> Graph-searchability: every Next.js doc inherits the universal backtick contract from `_graph-searchability.md`. Route segments (`app/(group)/page.tsx`), route handler files (`route.ts`), server-action names, component names, layout names, file paths — all in backticks every time, including in headings.
+
 Use this convention instead of `react.md` when the repo contains `next.config.{js,ts,mjs,cjs}`. Next.js is React-shaped but the App Router introduces enough new artifact types (route handlers, server actions, layouts, loading/error boundaries, middleware) that flat React docs lose too much fidelity.
 
 This convention covers Next.js 14 and 15. The **App Router** (`app/`) is the modern default and the assumed shape for new docs. The **Pages Router** (`pages/`) is treated as legacy fallback. A repo may have both — document them as separate modules and call out the precedence rule (App wins).

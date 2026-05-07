@@ -1,5 +1,6 @@
 <!-- Template: infra/components/<name>.md (Terraform/CDK/Pulumi component). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every resource type, construct name, output name, env var, file path in backticks every time; every fenced code block language-tagged (`hcl`, `ts`, `python`, `yaml`). -->
 
 <!-- docs:auto -->
 # {{Component name — e.g., "Networking", "Compute", "Databases"}}

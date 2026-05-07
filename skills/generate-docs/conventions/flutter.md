@@ -1,5 +1,7 @@
 # Stack convention: Flutter / Dart
 
+> Graph-searchability: every Flutter doc inherits the universal backtick contract from `_graph-searchability.md`. Screen / Page widget names, provider / Notifier / Bloc / Cubit names, repository and service classes, freezed model classes, file paths — all in backticks every time, including in headings.
+
 ## Module = feature folder
 
 Discovery:

@@ -1,5 +1,7 @@
 # Stack convention: Go
 
+> Graph-searchability: every Go doc inherits the universal backtick contract from `_graph-searchability.md`. Package paths, exported function names, struct names, interface names, route paths, file paths — all in backticks every time, including in headings.
+
 ## Module = top-level package OR cmd/<service>
 
 Discovery:

@@ -1,4 +1,6 @@
-# Documentation plan — {{repo}}
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — module / class / file paths in backticks every time so the plan itself is also queryable through the graph. -->
+
+# Documentation plan — `{{repo}}`
 
 Generated: {{timestamp}}
 Status: PROPOSED   ← change to APPROVED to continue (or reply "approved" in chat)

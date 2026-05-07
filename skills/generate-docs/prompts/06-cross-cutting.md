@@ -2,6 +2,8 @@
 
 Concerns that span multiple modules within this repo. Document once, link from each module.
 
+**Apply `conventions/_graph-searchability.md`**: every pattern name (permission class, decorator, helper function, middleware) in backticks every time, including in headings. Every fenced code block language-tagged.
+
 ## Canonical page template
 
 The page format for every `docs/cross-cutting/<concern>.md` file is defined by the canonical output-template:

@@ -1,5 +1,7 @@
 # Stack convention: generic (fallback)
 
+> Graph-searchability: every generic-stack doc inherits the universal backtick contract from `_graph-searchability.md`. Whatever symbols you discover in the graph (functions, classes, files, modules) go in backticks every time you mention them, including in headings. This is the rule that makes the docs link back to code at query time.
+
 Use this when no specific convention applies: an unknown stack, a polyglot mix, a monorepo with no clear structure, or an experimental layout. The agent's job here is to **detect intent from the graph**, not to apply a template.
 
 ## Core principle

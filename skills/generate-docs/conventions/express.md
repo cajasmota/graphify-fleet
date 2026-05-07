@@ -1,5 +1,7 @@
 # Stack convention: Express (Node)
 
+> Graph-searchability: every Express / Fastify / Koa / Hapi doc inherits the universal backtick contract from `_graph-searchability.md`. Router names, route paths, handler functions, middleware names, model names, file paths — all in backticks every time, including in headings.
+
 Use this for vanilla Node.js HTTP frameworks built around the "router + middleware + handler" model: Express, Fastify, Koa, Hapi. The structural patterns are similar enough that the same conventions apply — note framework-specific differences in `Patterns to detect`.
 
 ## Module = router or feature folder

@@ -1,5 +1,7 @@
 # Stack convention: React Native (Expo)
 
+> Graph-searchability: every React Native doc inherits the universal backtick contract from `_graph-searchability.md`. Screen names, hook names, store names, native module names, Expo plugin names, file paths — all in backticks every time, including in headings.
+
 ## Module = feature / screen group
 
 Discovery (in priority order):

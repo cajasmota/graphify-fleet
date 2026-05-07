@@ -1,6 +1,7 @@
 <!-- Template: screens.md / pages.md (mobile screens or web pages). -->
 <!-- Use this for both Frontend (React/Vue/SvelteKit) and Mobile (RN/Flutter). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every screen / page / hook name in backticks every time, including in headings (e.g. `### \`InspectionListScreen\``); every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Module}} — {{Screens | Pages}}
@@ -20,9 +21,9 @@
 
 | Route / Path | Name | Auth | Loads |
 |--------------|------|------|-------|
-| `/inspections` | [InspectionListScreen](#inspectionlistscreen) | required | `useInspections` query |
-| `/inspections/:id` | [InspectionDetailScreen](#inspectiondetailscreen) | required | `useInspectionDetails(id)` |
-| `/inspections/new` | [CreateInspectionScreen](#createinspectionscreen) | required | — (form) |
+| `/inspections` | [`InspectionListScreen`](#inspectionlistscreen) | required | `useInspections` query |
+| `/inspections/:id` | [`InspectionDetailScreen`](#inspectiondetailscreen) | required | `useInspectionDetails(id)` |
+| `/inspections/new` | [`CreateInspectionScreen`](#createinspectionscreen) | required | — (form) |
 <!-- auto:end -->
 
 <!-- auto:start id=screens -->

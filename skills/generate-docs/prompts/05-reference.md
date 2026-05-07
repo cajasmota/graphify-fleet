@@ -2,6 +2,8 @@
 
 Repo-wide reference docs that aren't per-module.
 
+**Apply `conventions/_graph-searchability.md`**: every env var, settings key, script name, dependency package, CLI command, file path in backticks every time. Every fenced code block language-tagged (e.g. ` ```bash `, ` ```yaml `, ` ```json `).
+
 ## Orchestration model
 
 On **Claude Code**, the orchestrator running this skill is coordinator-only (per `SKILL.md`): it MUST delegate the actual writing of each file in this pass to a subagent. The subagent should be given:

@@ -2,6 +2,8 @@
 
 Write `<repo>/docs/README.md` and `<repo>/docs/overview.md`.
 
+**Apply `conventions/_graph-searchability.md`**: every code identifier (entry-point file, framework name, key class, module name) in backticks every time, including in headings. Every fenced code block language-tagged.
+
 ## Your goal
 
 Two pages that together let a new contributor "get the shape" of the codebase in 10 minutes — without reading any source files.

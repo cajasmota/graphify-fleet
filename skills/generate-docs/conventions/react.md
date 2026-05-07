@@ -1,5 +1,7 @@
 # Stack convention: React (Vite, Next.js, CRA)
 
+> Graph-searchability: every React doc inherits the universal backtick contract from `_graph-searchability.md`. Component names (`<DashboardShell>`), hook names (`useInspections`), service function names, store / slice names, file paths — all in backticks every time, including in headings.
+
 ## Module = feature folder
 
 Discovery (in priority order):

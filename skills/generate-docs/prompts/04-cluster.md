@@ -15,6 +15,7 @@ You MUST read these snippets at the start of Pass 4 (or when a subagent is dispa
 3. `snippets/auto-marker-rules.md` — auto/human region rules so re-runs preserve human edits.
 4. `snippets/cross-link-format.md` — how to write cross-repo links via the merged graph.
 5. `snippets/confidence-markers.md` — when to use 🟡 vs 🔴 (do not conflate).
+6. `conventions/_graph-searchability.md` — the universal backtick contract. Apply it on every line you write: every code identifier in backticks (every occurrence), including IN headings; every fenced code block language-tagged.
 
 Templates to use as starting structure (pick the one matching the artifact you're writing):
 

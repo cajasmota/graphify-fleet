@@ -1,5 +1,6 @@
 <!-- Template: hooks.md (React/RN custom hooks) or composables.md (Vue). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every hook name in backticks every time, including in headings (e.g. `### \`useInspections\``); every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Module}} — {{Hooks | Composables}}
@@ -19,7 +20,7 @@
 
 | Hook | At-a-glance |
 |------|-------------|
-| [`useInspections`](#useinspections) | List query; depends on filter store |
+| [`useInspections`](#useinspections) | List query; reads `useFilterStore` |
 | [`useCreateInspection`](#usecreateinspection) | Mutation + optimistic update + cache invalidation |
 | [`useInspectionDetails`](#useinspectiondetails) | Single-record query with prefetching |
 <!-- auto:end -->

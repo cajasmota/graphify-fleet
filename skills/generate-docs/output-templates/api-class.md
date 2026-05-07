@@ -1,8 +1,9 @@
 <!-- Template: per-ViewSet/controller/handler-group api file. -->
 <!-- Subagent: copy this template, fill in placeholders, then run snippets/verification-checklist.md before returning. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every class/function/path/route in backticks, INCLUDING in headings (e.g. `### \`OrderViewSet\``); language-tag every fenced code block. -->
 
 <!-- docs:auto -->
-# {{ClassName}}
+# `{{ClassName}}`
 
 <!-- auto:start id=summary -->
 {{One paragraph: what this class owns + which models/resources it operates on. Use domain terms from docs-config.json vocabulary.}}

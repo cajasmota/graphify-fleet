@@ -1,5 +1,7 @@
 # Stack convention: database-graph
 
+> Graph-searchability: every database-graph doc inherits the universal backtick contract from `_graph-searchability.md`. Node labels, relationship types, constraint / index names, named queries, procedure names, migration filenames — all in backticks every time, including in headings.
+
 ## When to use this convention
 
 Use this convention for repositories whose primary purpose is a graph database — Neo4j (Aura, self-hosted, Community, Enterprise), Memgraph, Amazon Neptune (openCypher or Gremlin), TigerGraph, JanusGraph, or ArangoDB used in graph mode. The source of truth is Cypher (or Gremlin / GSQL / SPARQL) schema, constraint and index DDL, versioned migrations, custom procedures (APOC, GDS, MAGE), and bulk-loader scripts. Typical fits include cypher schema repos (`*.cypher`, `schema/*.cypher`, `migrations/*.cypher`), APOC procedure libraries, migration repos using `neo4j-migrations` or `liquibase-neo4j`, graph-data-pipeline repos that use `LOAD CSV` or `apoc.load.json` to ingest into a graph, and small Bloom / Aura configuration repos.

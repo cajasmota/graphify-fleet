@@ -1,5 +1,7 @@
 # Stack convention: Terraform
 
+> Graph-searchability: every Terraform doc inherits the universal backtick contract from `_graph-searchability.md`. Module names, resource types (`aws_vpc`, `google_storage_bucket`), variable names, output names, file paths — all in backticks every time, including in headings.
+
 Infra is organized differently — by **resource type** + **environment** rather than features.
 
 ## Discovery

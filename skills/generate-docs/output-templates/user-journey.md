@@ -1,5 +1,6 @@
 <!-- Template: <group-docs>/product/user-journeys/<journey>.md (cross-repo narrative). -->
 <!-- Used in Pass 7 (group synthesis). Subagent: copy, fill, verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every backend endpoint, screen name, service function, hook in backticks every time so the journey heading nodes link back to code nodes via the merged graph. Every fenced code block (mermaid included) language-tagged. -->
 
 <!-- docs:auto -->
 # {{Journey name — e.g., "Inspection lifecycle", "Onboarding", "Renewal"}}

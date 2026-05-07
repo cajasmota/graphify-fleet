@@ -1,5 +1,7 @@
 # Stack convention: Spring Boot (Java / Kotlin)
 
+> Graph-searchability: every Spring doc inherits the universal backtick contract from `_graph-searchability.md`. Controller / Service / Repository / Entity / DTO class names, annotation names (`@Transactional`, `@Component`), package paths, file paths — all in backticks every time, including in headings.
+
 ## Module = package or `@Configuration` boundary
 
 Discovery:

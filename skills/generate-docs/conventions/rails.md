@@ -1,5 +1,7 @@
 # Stack convention: Ruby on Rails
 
+> Graph-searchability: every Rails doc inherits the universal backtick contract from `_graph-searchability.md`. Controller / Model / Service / Job / Mailer / Policy class names, route helpers, association names, file paths — all in backticks every time, including in headings.
+
 ## Module = engine, namespace, or top-level resource
 
 Discovery (in priority order):

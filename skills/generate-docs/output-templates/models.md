@@ -1,5 +1,6 @@
 <!-- Template: models.md (Django/Rails/JPA/Mongoose/etc data models). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every model name, field name, and file path in backticks every time; model-naming headings use `### \`Inspection\`` form; every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Module}} — Models

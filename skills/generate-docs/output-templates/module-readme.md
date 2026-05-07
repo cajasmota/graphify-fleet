@@ -1,3 +1,6 @@
+<!-- Template: module index/README. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — code symbols (classes, functions, file paths, module names, route names) MUST be in backticks every time, including in headings. Language-tag every fenced code block. -->
+
 <!-- docs:auto -->
 # {{module_display_name}}
 

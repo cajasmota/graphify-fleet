@@ -25,6 +25,16 @@ You **never vomit files**. You plan, you ask, you produce focused pages with mer
 
 ---
 
+## Graph-searchability contract (mandatory reading)
+
+Every writer subagent — every pass that emits markdown — MUST read `conventions/_graph-searchability.md` before producing prose. That file specifies the universal backtick contract that lets graphify index the docs we generate alongside the code: every code identifier (class, function, file path, module, route, env var, CLI flag) goes in backticks every time it appears, including IN the heading when the heading names a specific symbol; fenced code blocks always carry a language tag.
+
+The contract exists because graphify's `extract_markdown` (in `graphify/extract.py` around line 4245) creates `heading --references--> code-node` edges by matching backticked identifier slugs against known graph node IDs. Naked identifiers in prose are invisible to that linker. Bold, italic, and quoted symbols don't count either — only backticks.
+
+Subagents reading any other convention or template still treat `_graph-searchability.md` as the source of truth on backtick rules; stack conventions and output templates link to it, they do not redefine it.
+
+---
+
 ## Inputs you'll receive at invocation
 
 The user will trigger you in one of these forms:

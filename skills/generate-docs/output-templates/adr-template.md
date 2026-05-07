@@ -1,3 +1,5 @@
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — code symbols, file paths, module names, decision-bearing identifiers all in backticks every time so the ADR shows up alongside affected code in graph queries. -->
+
 # ADR-NNNN: {{decision title}}
 
 - Status: proposed | accepted | superseded by ADR-XXXX

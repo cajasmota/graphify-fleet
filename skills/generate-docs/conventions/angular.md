@@ -1,5 +1,7 @@
 # Stack convention: Angular (17+, NgModule legacy, Nx)
 
+> Graph-searchability: every Angular doc inherits the universal backtick contract from `_graph-searchability.md`. Component / Service / Guard / Interceptor / Pipe / Directive class names, NgModule names, signal names, RxJS operators, file paths — all in backticks every time, including in headings.
+
 Angular 17+ pushes standalone components and signals as the default direction, while many existing codebases still rely on NgModule-based organization. Document whichever shape the repo actually uses; if both are present, note the mix in the repo overview.
 
 ## Module = feature folder / NgModule / Nx project

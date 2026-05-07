@@ -1,5 +1,7 @@
 # Stack convention: Document / NoSQL database
 
+> Graph-searchability: every database-document doc inherits the universal backtick contract from `_graph-searchability.md`. Collection names, table names, schema class names, GSI/index names, key prefixes, query operation names, file paths — all in backticks every time, including in headings.
+
 ## When to use this convention
 
 Use this convention when the repository **is** the data layer for a document or wide-column store — not an application that uses one. Typical cases: MongoDB schema-only repos (Mongoose schemas, JSON Schema validators, migrate-mongo scripts), DynamoDB table-definition repos extracted from infrastructure (CDK or Terraform stacks dedicated to data), Firestore rules-and-schema repos (`firestore.rules` + `firestore.indexes.json` + TS schema types), and Cosmos DB container-definition repos.

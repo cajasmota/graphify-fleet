@@ -1,5 +1,6 @@
 <!-- Template: services.md or services/<class>.md (for SUBFOLDER modules with many services). -->
 <!-- Subagent: copy, fill, then verify per snippets/verification-checklist.md. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — service classes/methods/file paths in backticks every time; symbol-naming headings use `### \`ServiceClass.method\`` form; every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Module}} — Services

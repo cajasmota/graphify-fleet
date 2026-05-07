@@ -1,5 +1,7 @@
 # Stack convention: FastAPI
 
+> Graph-searchability: every FastAPI stack doc inherits the universal backtick contract from `_graph-searchability.md`. Router names, path operations, dependency functions, Pydantic schemas, file paths — all in backticks every time, including in headings.
+
 (Use this instead of `python-generic.md` when FastAPI is the framework.)
 
 ## Module = router or feature package

@@ -1,5 +1,6 @@
 <!-- Template: cross-cutting/<concern>.md (auth, permissions, errors, logging, caching, i18n, theming). -->
 <!-- Subagent: copy, fill, then verify. -->
+<!-- Graph-searchability: apply conventions/_graph-searchability.md — every pattern name (permission class, decorator, helper) in backticks every time, including in headings (e.g. `### \`IsClientOwner\``, `### \`@require_inspector_role\``); every fenced code block language-tagged. -->
 
 <!-- docs:auto -->
 # {{Concern}} (cross-cutting)

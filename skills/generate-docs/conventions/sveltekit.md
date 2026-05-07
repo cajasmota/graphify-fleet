@@ -1,5 +1,7 @@
 # Stack convention: SvelteKit / Svelte
 
+> Graph-searchability: every SvelteKit doc inherits the universal backtick contract from `_graph-searchability.md`. Route paths (`+page.svelte`, `+server.ts`), component names, store names, action names, file paths — all in backticks every time, including in headings.
+
 ## Module = route group, lib subdirectory, or feature folder
 
 Discovery:
