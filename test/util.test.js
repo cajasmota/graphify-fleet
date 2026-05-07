@@ -7,6 +7,8 @@ import { join } from 'node:path';
 
 import {
     expandPath, flattenRepos, getGitDir, readJson, writeJson, loadConfig, levenshtein, HOME,
+    parseSemver, semverCompare, classifyGraphifyVersion, resolvedGraphifyPin,
+    GRAPHIFY_MIN_VERSION, GRAPHIFY_TESTED_MAX,
 } from '../src/util.js';
 
 function mkTmp() {
@@ -270,4 +272,108 @@ test('levenshtein: empty strings', () => {
 
 test('levenshtein: completely different', () => {
     assert.equal(levenshtein('abc', 'xyz'), 3);
+});
+
+// ---------------------------------------------------------------------------
+// Semver helpers + graphify version-floor logic
+// ---------------------------------------------------------------------------
+
+test('parseSemver: basic X.Y.Z', () => {
+    assert.deepEqual(parseSemver('0.7.9'), [0, 7, 9]);
+    assert.deepEqual(parseSemver('1.0.0'), [1, 0, 0]);
+});
+
+test('parseSemver: shorter forms padded with zeros', () => {
+    assert.deepEqual(parseSemver('1'), [1, 0, 0]);
+    assert.deepEqual(parseSemver('1.2'), [1, 2, 0]);
+});
+
+test('parseSemver: leading v ignored, prerelease stripped', () => {
+    assert.deepEqual(parseSemver('v0.8.0'), [0, 8, 0]);
+    assert.deepEqual(parseSemver('0.8.0-rc1'), [0, 8, 0]);
+    assert.deepEqual(parseSemver('0.8.0+build.5'), [0, 8, 0]);
+});
+
+test('parseSemver: garbage returns null', () => {
+    assert.equal(parseSemver('garbage'), null);
+    assert.equal(parseSemver(undefined), null);
+    assert.equal(parseSemver(null), null);
+    assert.equal(parseSemver(''), null);
+});
+
+test('semverCompare: equal', () => {
+    assert.equal(semverCompare('0.7.9', '0.7.9'), 0);
+    assert.equal(semverCompare('1.0', '1.0.0'), 0);
+});
+
+test('semverCompare: greater / lesser', () => {
+    assert.equal(semverCompare('0.8.0', '0.7.9'), 1);
+    assert.equal(semverCompare('0.7.9', '0.8.0'), -1);
+    assert.equal(semverCompare('1.0.0', '0.99.99'), 1);
+});
+
+test('semverCompare: patch-level differences', () => {
+    assert.equal(semverCompare('0.7.10', '0.7.9'), 1);
+    assert.equal(semverCompare('0.7.9', '0.7.10'), -1);
+});
+
+test('semverCompare: unparseable returns null', () => {
+    assert.equal(semverCompare('garbage', '0.7.9'), null);
+    assert.equal(semverCompare('0.7.9', 'garbage'), null);
+});
+
+test('classifyGraphifyVersion: in_range / below / above / unknown', () => {
+    assert.equal(classifyGraphifyVersion(GRAPHIFY_MIN_VERSION), 'in_range');
+    assert.equal(classifyGraphifyVersion(GRAPHIFY_TESTED_MAX), 'in_range');
+    assert.equal(classifyGraphifyVersion('0.7.0'), 'below');
+    assert.equal(classifyGraphifyVersion('99.0.0'), 'above');
+    assert.equal(classifyGraphifyVersion('garbage'), 'unknown');
+});
+
+test('resolvedGraphifyPin: env var wins, returns source=env', () => {
+    const dir = mkTmp();
+    const prev = process.env.GFLEET_GRAPHIFY_VERSION;
+    const prevState = process.env.GFLEET_STATE_DIR;
+    try {
+        process.env.GFLEET_STATE_DIR = join(dir, '.graphify-fleet');
+        process.env.GFLEET_GRAPHIFY_VERSION = '0.7.9';
+        const r = resolvedGraphifyPin();
+        assert.equal(r.version, '0.7.9');
+        assert.equal(r.source, 'env');
+    } finally {
+        if (prev === undefined) delete process.env.GFLEET_GRAPHIFY_VERSION;
+        else process.env.GFLEET_GRAPHIFY_VERSION = prev;
+        if (prevState === undefined) delete process.env.GFLEET_STATE_DIR;
+        else process.env.GFLEET_STATE_DIR = prevState;
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('resolvedGraphifyPin: no env / no preferences returns null', () => {
+    const dir = mkTmp();
+    const prev = process.env.GFLEET_GRAPHIFY_VERSION;
+    const prevState = process.env.GFLEET_STATE_DIR;
+    try {
+        // Point state dir at empty tmp — preferences.json absent → null.
+        process.env.GFLEET_STATE_DIR = join(dir, '.graphify-fleet');
+        delete process.env.GFLEET_GRAPHIFY_VERSION;
+        // Re-import to pick up the env override (PREFERENCES_PATH is computed
+        // at import time via FLEET_STATE_DIR). Use a child process to ensure
+        // a clean module load.
+        const code = `import('${UTIL_PATH.replace(/\\/g, '\\\\')}').then(m => { const r = m.resolvedGraphifyPin(); console.log(JSON.stringify(r)); });`;
+        const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+            encoding: 'utf8',
+            env: { ...process.env, GFLEET_STATE_DIR: process.env.GFLEET_STATE_DIR },
+        });
+        assert.equal(r.status, 0, r.stderr);
+        const parsed = JSON.parse(r.stdout.trim());
+        assert.equal(parsed.version, null);
+        assert.equal(parsed.source, null);
+    } finally {
+        if (prev === undefined) delete process.env.GFLEET_GRAPHIFY_VERSION;
+        else process.env.GFLEET_GRAPHIFY_VERSION = prev;
+        if (prevState === undefined) delete process.env.GFLEET_STATE_DIR;
+        else process.env.GFLEET_STATE_DIR = prevState;
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

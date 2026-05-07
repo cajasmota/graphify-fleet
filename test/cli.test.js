@@ -68,6 +68,45 @@ test('gfleet unknown-cmd — exits non-zero', () => {
     assert.notEqual(r.status, 0);
 });
 
+test('gfleet doctor — surfaces graphify version line + tested range', () => {
+    const r = run(['doctor']);
+    assert.equal(r.status, 0);
+    // The doctor output mentions the tested range regardless of whether
+    // graphify is installed; when not installed the warning line is shown.
+    const out = r.stdout + r.stderr;
+    // Either the install prompt or the version+range pair must appear.
+    const matches = /graphify version:.*range: >=/.test(out)
+        || /graphify not installed/.test(out);
+    assert.ok(matches, `expected version/range or install hint in doctor output:\n${out}`);
+});
+
+test('gfleet doctor — shows pin source when GFLEET_GRAPHIFY_VERSION is set', () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), 'gfleet-cli-'));
+    try {
+        const env = {
+            ...process.env,
+            HOME: tmpHome,
+            GFLEET_STATE_DIR: join(tmpHome, '.graphify-fleet'),
+            GFLEET_GRAPHIFY_VERSION: '0.7.9',
+        };
+        const r = spawnSync(process.execPath, [BIN, 'doctor'], {
+            encoding: 'utf8',
+            timeout: 10_000,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        assert.equal(r.status, 0);
+        const out = r.stdout + r.stderr;
+        // If graphify isn't installed locally we still show install prompt;
+        // we only assert pin surfacing when graphify *is* installed.
+        if (/graphify found/.test(out)) {
+            assert.match(out, /graphify pinned to 0\.7\.9 \(env var/);
+        }
+    } finally {
+        try { rmSync(tmpHome, { recursive: true, force: true }); } catch {}
+    }
+});
+
 test('gfleet wizard with stdin closed — fails gracefully (no hang)', () => {
     // stdin is 'ignore' (closed). The interactive wizard should error rather
     // than block. spawnSync timeout would catch a hang.

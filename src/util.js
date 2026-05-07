@@ -237,30 +237,120 @@ export function graphifyPython() {
     return which('python3') || which('python');
 }
 
-// Pinned graphify version. We still pin for predictable extraction +
-// merge-driver behavior; the MCP layer is independent (gfleet-owned fork).
-export const GRAPHIFY_PIN = '0.7.9';
+// Cross-repo / extraction contract with graphify is now limited to:
+//   1. NetworkX node_link_data shape of `graph.json` (nodes[].id required).
+//   2. The `graphify update .` CLI shape (the watcher invokes it).
+// Both have been stable since 0.7.x, so we accept a range instead of pinning.
+// `GRAPHIFY_MIN_VERSION` is the floor (versions below this lack required
+// fields or CLI flags). `GRAPHIFY_TESTED_MAX` is the highest version we have
+// verified — newer versions warn but proceed.
+export const GRAPHIFY_MIN_VERSION = '0.7.9';
+export const GRAPHIFY_TESTED_MAX = '0.8.0';
+
+// Back-compat export. A handful of consumers (and older error messages) used
+// `GRAPHIFY_PIN`; keep it as an alias for the floor so existing imports work.
+export const GRAPHIFY_PIN = GRAPHIFY_MIN_VERSION;
+
+// ----- semver (no deps) -----
+// Parse `X.Y.Z` (or `X.Y`, `X`) into [major, minor, patch]. Prerelease /
+// build metadata (anything after `-` or `+`) is ignored for ordering.
+export function parseSemver(s) {
+    if (typeof s !== 'string') return null;
+    const core = s.trim().replace(/^v/, '').split(/[-+]/, 1)[0];
+    if (!/^\d+(\.\d+){0,2}$/.test(core)) return null;
+    const parts = core.split('.').map(n => parseInt(n, 10));
+    while (parts.length < 3) parts.push(0);
+    return parts.slice(0, 3);
+}
+
+// Compare two semver strings. Returns -1 if a<b, 0 if equal, 1 if a>b.
+// Returns null if either string is unparseable.
+export function semverCompare(a, b) {
+    const pa = parseSemver(a);
+    const pb = parseSemver(b);
+    if (!pa || !pb) return null;
+    for (let i = 0; i < 3; i++) {
+        if (pa[i] < pb[i]) return -1;
+        if (pa[i] > pb[i]) return 1;
+    }
+    return 0;
+}
+
+// Classify a graphify version against the supported range.
+// Returns one of: 'unknown' | 'below' | 'in_range' | 'above'.
+export function classifyGraphifyVersion(v) {
+    const cmpMin = semverCompare(v, GRAPHIFY_MIN_VERSION);
+    const cmpMax = semverCompare(v, GRAPHIFY_TESTED_MAX);
+    if (cmpMin === null || cmpMax === null) return 'unknown';
+    if (cmpMin < 0) return 'below';
+    if (cmpMax > 0) return 'above';
+    return 'in_range';
+}
+
+// ----- preferences (~/.graphify-fleet/preferences.json) -----
+export const PREFERENCES_PATH = join(FLEET_STATE_DIR, 'preferences.json');
+
+export function readPreferences() {
+    return readJson(PREFERENCES_PATH, {});
+}
+export function writePreferences(p) { writeJson(PREFERENCES_PATH, p); }
+
+// Resolve which graphify version to install, honoring (in order):
+//   1. GFLEET_GRAPHIFY_VERSION env var (one-shot pin for this process)
+//   2. preferences.json `graphify_version` (persisted via `gfleet update --pin-graphify`)
+//   3. null → install latest, then verify against [MIN, TESTED_MAX]
+// Returns { version: string|null, source: 'env'|'preferences'|null }.
+export function resolvedGraphifyPin() {
+    const env = process.env.GFLEET_GRAPHIFY_VERSION;
+    if (env && env.trim()) return { version: env.trim(), source: 'env' };
+    try {
+        const prefs = readPreferences();
+        if (prefs.graphify_version) return { version: String(prefs.graphify_version), source: 'preferences' };
+    } catch {}
+    return { version: null, source: null };
+}
 
 export function ensureGraphify(verbose = true) {
     if (!which('uv')) die('uv is required. install: curl -LsSf https://astral.sh/uv/install.sh | sh');
-    const spec = `graphifyy==${GRAPHIFY_PIN}`;
+
+    const pin = resolvedGraphifyPin();
+    const installSpec = pin.version ? `graphifyy==${pin.version}` : 'graphifyy';
+
     if (!graphifyBin()) {
-        if (verbose) log.info(`installing ${spec} via uv (with mcp + watchdog extras)...`);
-        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog']);
-        return;
+        if (verbose) log.info(`installing ${installSpec} via uv (with mcp + watchdog extras)...`);
+        runOrThrow('uv', ['tool', 'install', installSpec, '--with', 'mcp', '--with', 'watchdog']);
+        // fall through to verification
+    } else if (pin.version) {
+        // A pin is in force — make sure the installed version matches.
+        const installed = getGraphifyVersion();
+        if (installed && installed !== pin.version) {
+            if (verbose) log.warn(`graphifyy ${installed} is installed; ${pin.source} pin requests ${pin.version}. Repinning.`);
+            runOrThrow('uv', ['tool', 'install', installSpec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        }
     }
+
+    // Always verify mcp + watchdog extras are present.
     const py = graphifyPython();
-    const versionResult = run(py, ['-c', `from importlib.metadata import version; print(version('graphifyy'))`]);
-    const installed = versionResult.code === 0 ? versionResult.stdout.trim() : null;
-    if (installed && installed !== GRAPHIFY_PIN) {
-        if (verbose) log.warn(`graphifyy ${installed} is installed; gfleet pins to ${GRAPHIFY_PIN}. Repinning.`);
-        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+    if (py) {
+        const ok = runOk(py, ['-c', 'import mcp, watchdog']);
+        if (!ok) {
+            if (verbose) log.info('adding mcp + watchdog extras to graphifyy...');
+            runOrThrow('uv', ['tool', 'install', installSpec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+        }
+    }
+
+    // Verify the installed version is within the supported range.
+    const installed = getGraphifyVersion();
+    if (!installed) {
+        if (verbose) log.warn('graphify version unknown after install — skipping range check');
         return;
     }
-    const ok = runOk(py, ['-c', 'import mcp, watchdog']);
-    if (!ok) {
-        if (verbose) log.info('adding mcp + watchdog extras to graphifyy...');
-        runOrThrow('uv', ['tool', 'install', spec, '--with', 'mcp', '--with', 'watchdog', '--reinstall']);
+    const klass = classifyGraphifyVersion(installed);
+    if (klass === 'below') {
+        die(`graphify ${installed} is installed but gfleet requires >= ${GRAPHIFY_MIN_VERSION}. Run \`uv tool upgrade graphify\` (or set GFLEET_GRAPHIFY_VERSION to override).`);
+    }
+    if (klass === 'above' && verbose) {
+        log.warn(`graphify ${installed} is newer than the version range gfleet has been tested with (>=${GRAPHIFY_MIN_VERSION}, <=${GRAPHIFY_TESTED_MAX}). Most things work; if you hit issues, set GFLEET_GRAPHIFY_VERSION=${GRAPHIFY_MIN_VERSION} to pin back.`);
     }
 }
 

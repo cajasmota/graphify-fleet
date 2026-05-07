@@ -18,6 +18,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 from .communities import communities_for, evict_repo
+from .graph_schema import emit_warnings, validate_graph_schema
 from .index import LabelIndex
 from .links_loader import build_xrepo_graph, load_links_file
 from .telemetry import get_telemetry
@@ -30,31 +31,38 @@ def _scan_graphs_dir(graphs_dir: Path) -> list[Path]:
     return sorted(p for p in graphs_dir.glob("*.json"))
 
 
-def _load_one_graph(graph_path: Path) -> tuple[Optional[nx.Graph], Optional[str]]:
-    """Load one repo graph file. Returns (graph, error_reason).
+def _load_one_graph(graph_path: Path, repo_tag: str = "") -> tuple[Optional[nx.Graph], Optional[str], list[str]]:
+    """Load one repo graph file. Returns (graph, error_reason, schema_warnings).
 
-    On success: (G, None). On failure: (None, reason) where `reason` is a
-    short human-readable string suitable for surfacing in tool responses.
+    On success: (G, None, warnings). On failure: (None, reason, warnings).
+    `reason` is a short human-readable string suitable for surfacing in tool
+    responses. `warnings` is non-empty when the schema sniff flagged
+    non-fatal type issues (always emitted to stderr by the caller).
     """
     try:
         if not graph_path.exists():
-            return None, "file missing"
+            return None, "file missing", []
         text = graph_path.read_text(encoding="utf-8")
         if not text.strip():
-            return None, "file empty"
+            return None, "file empty", []
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        return None, f"corrupt JSON ({exc})"
+        return None, f"corrupt JSON ({exc})", []
     except OSError as exc:
-        return None, f"unreadable ({exc})"
+        return None, f"unreadable ({exc})", []
+
+    tag = repo_tag or graph_path.stem
+    ok, fatal, warnings = validate_graph_schema(data, tag)
+    if not ok:
+        return None, fatal or "schema validation failed", warnings
     try:
         try:
             G = json_graph.node_link_graph(data, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(data)
-        return G, None
+        return G, None, warnings
     except (ValueError, KeyError) as exc:
-        return None, f"malformed graph ({exc})"
+        return None, f"malformed graph ({exc})", warnings
 
 
 class GraphState:
@@ -74,6 +82,9 @@ class GraphState:
         self.mtimes: dict[str, float] = {}
         # Tier A item 5: per-repo unavailability tracking.
         self.unavailable: dict[str, str] = {}  # repo -> reason
+        # Per-repo schema warnings surfaced by the graph_schema sniff. Read by
+        # graph_stats and (eventually) `gfleet doctor` to flag silent drift.
+        self.graph_schema_warnings: dict[str, list[str]] = {}
         self.label_index = LabelIndex()
         self.xrepo_edges = nx.Graph()
         self.links_mtime: float = 0.0
@@ -124,7 +135,12 @@ class GraphState:
             self.unavailable[tag] = f"stat failed ({exc})"
             get_telemetry().incr(f"repo.unavailable.stat_failed")
             return
-        G, reason = _load_one_graph(path)
+        G, reason, schema_warnings = _load_one_graph(path, tag)
+        if schema_warnings:
+            emit_warnings(tag, schema_warnings)
+            self.graph_schema_warnings[tag] = schema_warnings
+        else:
+            self.graph_schema_warnings.pop(tag, None)
         if G is None:
             self.unavailable[tag] = reason or "unknown error"
             debug_log(f"repo '{tag}' unavailable: {self.unavailable[tag]}")
@@ -163,21 +179,26 @@ class GraphState:
 
         max_workers = min(8, os.cpu_count() or 4)
 
-        def _worker(path: Path) -> tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str]]:
+        def _worker(path: Path) -> tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str], list[str]]:
             try:
                 m = path.stat().st_mtime
             except OSError as exc:
-                return path.stem, path, None, None, f"stat failed ({exc})"
-            G, reason = _load_one_graph(path)
-            return path.stem, path, m, G, reason
+                return path.stem, path, None, None, f"stat failed ({exc})", []
+            G, reason, warnings = _load_one_graph(path, path.stem)
+            return path.stem, path, m, G, reason, warnings
 
-        results: list[tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str]]] = []
+        results: list[tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str], list[str]]] = []
         if files:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 results = list(pool.map(_worker, files))
 
         # Apply results in graph-name order for predictable stderr.
-        for tag, path, m, G, reason in sorted(results, key=lambda r: r[0]):
+        for tag, path, m, G, reason, schema_warnings in sorted(results, key=lambda r: r[0]):
+            if schema_warnings:
+                emit_warnings(tag, schema_warnings)
+                self.graph_schema_warnings[tag] = schema_warnings
+            else:
+                self.graph_schema_warnings.pop(tag, None)
             if G is None:
                 self.unavailable[tag] = reason or "unknown error"
                 debug_log(f"repo '{tag}' unavailable: {self.unavailable[tag]}")
@@ -199,6 +220,7 @@ class GraphState:
         self.communities.pop(tag, None)
         self.mtimes.pop(tag, None)
         self.unavailable.pop(tag, None)
+        self.graph_schema_warnings.pop(tag, None)
         self.label_index.clear_repo(tag)
         evict_repo(tag)
 

@@ -32,6 +32,7 @@ const EXPECTED_MODULES = [
     'links_loader.py',
     'communities.py',
     'utils.py',
+    'graph_schema.py',
 ];
 
 const PY = (() => {
@@ -247,6 +248,110 @@ print('OK')
 `;
         const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
         assert.equal(r.status, 0, `graceful-failure script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Schema sniff at MCP load time (graphify version-floor support)
+// ---------------------------------------------------------------------------
+
+test('schema sniff: graph with nodes missing `id` marks repo unavailable; valid sibling still serves', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        // No id field on nodes — simulates a graphify schema break.
+        const broken = {
+            directed: false, multigraph: false, graph: {},
+            nodes: [{ name: 'n1', label: 'Hello' }, { name: 'n2', label: 'World' }],
+            links: [{ source: 'n1', target: 'n2', relation: 'calls' }],
+        };
+        const valid = {
+            directed: false, multigraph: false, graph: {},
+            nodes: [{ id: 'n1', label: 'Alpha' }, { id: 'n2', label: 'Beta' }],
+            links: [{ source: 'n1', target: 'n2', relation: 'calls' }],
+        };
+        writeFileSync(join(graphsDir, 'broken.json'), JSON.stringify(broken));
+        writeFileSync(join(graphsDir, 'good.json'), JSON.stringify(valid));
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+assert state.is_unavailable('broken'), f"broken should be unavailable: {state.unavailable}"
+assert "id" in state.unavailable['broken'], state.unavailable['broken']
+assert 'good' in state.graphs, f"good should load: {state.graphs.keys()}"
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `schema-sniff missing-id script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('schema sniff: graph with `edges` key (vs `links`) loads cleanly', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const data = {
+            directed: false, multigraph: false, graph: {},
+            nodes: [{ id: 'n1', label: 'A' }, { id: 'n2', label: 'B' }],
+            edges: [{ source: 'n1', target: 'n2', relation: 'calls' }],
+        };
+        writeFileSync(join(graphsDir, 'edgekey.json'), JSON.stringify(data));
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+# Schema sniff must accept either 'edges' or 'links' — sniff itself passes.
+# (NetworkX node_link_graph requires 'links' so the graph load may still
+# fail at the networkx layer, but the failure is informative not silent.)
+assert 'edgekey' not in state.unavailable or 'id' not in state.unavailable.get('edgekey',''), \
+    f"sniff should not reject 'edges' key on missing-id grounds: {state.unavailable}"
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `schema-sniff edges-key script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('schema sniff: empty graph loads cleanly', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const data = { directed: false, multigraph: false, graph: {}, nodes: [], links: [] };
+        writeFileSync(join(graphsDir, 'empty.json'), JSON.stringify(data));
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+assert 'empty' in state.graphs, f"empty graph should load: graphs={list(state.graphs.keys())} unavail={state.unavailable}"
+assert not state.is_unavailable('empty'), state.unavailable.get('empty')
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `schema-sniff empty-graph script failed: ${r.stderr}`);
         assert.match(r.stdout, /OK/);
     } finally {
         rmSync(tmp, { recursive: true, force: true });

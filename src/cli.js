@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
     log, die, which, graphifyBin, graphifyPython, run,
-    listRegistered, resolveConfigArg, REGISTRY, GRAPHIFY_PIN, getGraphifyVersion,
+    listRegistered, resolveConfigArg, REGISTRY,
+    GRAPHIFY_MIN_VERSION, GRAPHIFY_TESTED_MAX,
+    getGraphifyVersion, classifyGraphifyVersion, resolvedGraphifyPin,
+    readPreferences, writePreferences, PREFERENCES_PATH,
     ROOT_DIR, loadConfig, expandPath,
 } from './util.js';
 import { install, uninstall } from './install.js';
@@ -131,9 +134,24 @@ function doctor() {
     if (graphifyBin()) {
         log.ok(`graphify found (${graphifyBin()})`);
         const v = getGraphifyVersion();
-        if (v === GRAPHIFY_PIN)        log.ok(`graphify version: ${v} (matches gfleet pin)`);
-        else if (v)                    log.warn(`graphify version: ${v}  — gfleet pins to ${GRAPHIFY_PIN}. Run gfleet install to repin (will re-apply patch).`);
-        else                           log.warn('graphify version unknown');
+        const range = `(range: >=${GRAPHIFY_MIN_VERSION}, <=${GRAPHIFY_TESTED_MAX})`;
+        if (v) {
+            const klass = classifyGraphifyVersion(v);
+            if (klass === 'in_range')      log.ok(`graphify version: ${v}  ${range}`);
+            else if (klass === 'above')    log.warn(`graphify version: ${v}  ${range} — newer than tested; most things work, set GFLEET_GRAPHIFY_VERSION=${GRAPHIFY_MIN_VERSION} to pin back if needed.`);
+            else if (klass === 'below')    log.err(`graphify version: ${v}  ${range} — below required floor. Run: uv tool upgrade graphify`);
+            else                           log.warn(`graphify version: ${v} (unparseable; range ${range})`);
+        } else {
+            log.warn('graphify version unknown');
+        }
+
+        // Surface any pin source so the user knows why upgrades are blocked.
+        const pin = resolvedGraphifyPin();
+        if (pin.version) {
+            const where = pin.source === 'env' ? 'env var GFLEET_GRAPHIFY_VERSION' : `preferences (${PREFERENCES_PATH})`;
+            log.info(`graphify pinned to ${pin.version} (${where})`);
+        }
+
         const py = graphifyPython();
         const r = run(py, ['-c', 'import mcp, watchdog']);
         if (r.code === 0) log.ok('graphify extras: mcp + watchdog');
@@ -249,6 +267,26 @@ export async function main(argv) {
                 const refreshRules = args.includes('--refresh-rules');
                 const refreshRulesLite = args.includes('--refresh-rules-lite');
                 const force = args.includes('--force');
+                // --pin-graphify <version|clear>: persist a pin to preferences
+                // and use it for this run via GFLEET_GRAPHIFY_VERSION. Pass
+                // "clear" to remove the persisted pin.
+                const pinIdx = args.indexOf('--pin-graphify');
+                if (pinIdx >= 0) {
+                    const val = args[pinIdx + 1];
+                    if (!val) die('--pin-graphify requires a value (a version like 0.7.9, or "clear")');
+                    const prefs = readPreferences();
+                    if (val === 'clear') {
+                        delete prefs.graphify_version;
+                        writePreferences(prefs);
+                        log.ok(`cleared graphify pin (preferences: ${PREFERENCES_PATH})`);
+                    } else {
+                        prefs.graphify_version = val;
+                        writePreferences(prefs);
+                        log.ok(`pinned graphify to ${val} (preferences: ${PREFERENCES_PATH})`);
+                        // Apply for this run too.
+                        process.env.GFLEET_GRAPHIFY_VERSION = val;
+                    }
+                }
                 await update({ refreshRules, refreshRulesLite, force });
                 break;
             }
