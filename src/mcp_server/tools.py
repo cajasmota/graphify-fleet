@@ -344,7 +344,99 @@ def graph_stats(state: GraphState, arguments: dict) -> str:
     return out
 
 
+# Hard cap on path length for cross-repo searches. Anything longer is
+# almost certainly a pathological traversal across the entire fleet.
+_SHORTEST_PATH_MAX_LEN = 12
+
+
+def _resolve_endpoint(state: GraphState, raw: str, repo_filter: Optional[str]) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+    """Resolve a user-supplied endpoint to a prefixed `<repo>::<id>` node id
+    in the composite graph. Returns `(prefixed_id, None, None)` on success or
+    `(None, matches, error)` when ambiguous / not found.
+
+    Resolution order: explicit `<repo>::<id>` prefix, then exact node-id /
+    label match via `LabelIndex` across all available repos (or limited to
+    `repo_filter` when set). Ambiguity surfaces all matches to the agent so
+    it can disambiguate.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None, None, "empty endpoint"
+    if "::" in raw:
+        repo, local = raw.split("::", 1)
+        G = state.graphs.get(repo)
+        if G is None or local not in G:
+            return None, None, f"node '{raw}' not found"
+        if repo_filter and repo != repo_filter:
+            return None, None, f"endpoint '{raw}' is in repo '{repo}', not in repo_filter '{repo_filter}'"
+        return f"{repo}::{local}", None, None
+
+    hits = state.label_index.lookup_substring(raw)
+    candidates: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for repo, nid, _orig in hits:
+        if repo_filter and repo != repo_filter:
+            continue
+        if state.is_unavailable(repo):
+            continue
+        key = (repo, nid)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(key)
+
+    if not candidates:
+        return None, None, f"no node matching '{raw}' found"
+    if len(candidates) > 1:
+        prefixed = [f"{r}::{n}" for r, n in candidates[:25]]
+        return None, prefixed, f"ambiguous endpoint '{raw}' ({len(candidates)} matches)"
+    repo, nid = candidates[0]
+    return f"{repo}::{nid}", None, None
+
+
+def _path_edges_payload(H: nx.Graph, path_nodes: list[str]) -> tuple[list[dict], float]:
+    """Walk a resolved path and return (edges_payload, weakest_link_confidence)."""
+    edges_payload: list[dict] = []
+    weakest = 1.0
+    for i in range(len(path_nodes) - 1):
+        u, v = path_nodes[i], path_nodes[i + 1]
+        edata = H.edges[u, v]
+        cross = bool(edata.get("cross_repo"))
+        confidence = edata.get("confidence")
+        try:
+            conf_val = float(confidence) if confidence is not None else 1.0
+        except (TypeError, ValueError):
+            conf_val = 1.0
+        if cross and conf_val < weakest:
+            weakest = conf_val
+        entry = {
+            "source": u,
+            "target": v,
+            "relation": edata.get("relation", ""),
+            "confidence": conf_val,
+            "cross_repo": cross,
+        }
+        if cross:
+            if edata.get("channel") is not None:
+                entry["channel"] = edata.get("channel")
+            if edata.get("identifier") is not None:
+                entry["identifier"] = edata.get("identifier")
+            if edata.get("method") is not None:
+                entry["method"] = edata.get("method")
+        edges_payload.append(entry)
+    return edges_payload, weakest
+
+
 def shortest_path(state: GraphState, arguments: dict) -> str:
+    """Cross-repo shortest path.
+
+    When `repo_filter` is set or both endpoints resolve to the same repo,
+    the search is scoped to a single per-repo graph (legacy behaviour).
+    Otherwise the search runs over a weighted composite that overlays
+    `_xrepo_edges` from `<group>-links.json`, so paths can hop between
+    repos via confirmed cross-repo links. Cross-repo edges are weighted
+    `1 / max(0.1, confidence)` so high-confidence hops feel cheap.
+    """
     state.refresh_if_stale()
     repo_filter = arguments.get("repo_filter")
     if repo_filter:
@@ -352,41 +444,112 @@ def shortest_path(state: GraphState, arguments: dict) -> str:
         if reason:
             return _unavailable_response(repo_filter, reason)
     max_hops = int(arguments.get("max_hops", 8))
-    G, composite = _pick_graph(state, repo_filter)
-    if G.number_of_nodes() == 0:
-        return "No graph available."
-    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-    if not src_scored:
-        return f"No node matching source '{arguments['source']}' found."
-    if not tgt_scored:
-        return f"No node matching target '{arguments['target']}' found."
-    src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
+
+    src_raw = arguments.get("source") or ""
+    tgt_raw = arguments.get("target") or ""
+
+    # Endpoint resolution. Try the LabelIndex / prefixed-ID resolver first
+    # so cross-repo paths (where neither endpoint is in the active per-repo
+    # graph) work without needing the legacy `_score_nodes` to be invoked
+    # against a single graph.
+    src_full, src_alts, src_err = _resolve_endpoint(state, src_raw, repo_filter)
+    tgt_full, tgt_alts, tgt_err = _resolve_endpoint(state, tgt_raw, repo_filter)
+    if src_full is None:
+        payload = {"found": False, "reason": src_err, "source": src_raw, "target": tgt_raw}
+        if src_alts:
+            payload["matches"] = src_alts
+        return json.dumps(payload)
+    if tgt_full is None:
+        payload = {"found": False, "reason": tgt_err, "source": src_raw, "target": tgt_raw}
+        if tgt_alts:
+            payload["matches"] = tgt_alts
+        return json.dumps(payload)
+
+    src_repo, src_local = src_full.split("::", 1)
+    tgt_repo, tgt_local = tgt_full.split("::", 1)
+
+    # Single-repo fast path: preserves legacy semantics when repo_filter
+    # is set OR both endpoints land in the same repo.
+    if repo_filter or src_repo == tgt_repo:
+        repo = repo_filter or src_repo
+        G = state.graphs.get(repo)
+        if G is None or G.number_of_nodes() == 0:
+            return json.dumps({"found": False, "reason": "no graph available", "source": src_full, "target": tgt_full})
+        try:
+            path_nodes = nx.shortest_path(G, src_local, tgt_local)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return json.dumps({"found": False, "reason": "no path", "source": src_full, "target": tgt_full})
+        hops = len(path_nodes) - 1
+        if hops > max_hops or hops + 1 > _SHORTEST_PATH_MAX_LEN:
+            return json.dumps({"found": False, "reason": f"path exceeds max_hops={max_hops}", "source": src_full, "target": tgt_full})
+        prefixed = [f"{repo}::{n}" for n in path_nodes]
+        edges_payload: list[dict] = []
+        for i in range(len(path_nodes) - 1):
+            u, v = path_nodes[i], path_nodes[i + 1]
+            edata = G.edges[u, v]
+            confidence = edata.get("confidence")
+            try:
+                conf_val = float(confidence) if confidence is not None else 1.0
+            except (TypeError, ValueError):
+                conf_val = 1.0
+            edges_payload.append({
+                "source": f"{repo}::{u}",
+                "target": f"{repo}::{v}",
+                "relation": edata.get("relation", ""),
+                "confidence": conf_val,
+                "cross_repo": False,
+            })
+        return json.dumps({
+            "found": True,
+            "path": prefixed,
+            "edges": edges_payload,
+            "weakest_link_confidence": 1.0,
+            "length": hops,
+            "crosses_repos": False,
+        })
+
+    # Cross-repo path: build the weighted composite and search.
+    H = state.composite_view(weighted=True)
+    if H.number_of_nodes() == 0:
+        return json.dumps({"found": False, "reason": "no graphs loaded", "source": src_full, "target": tgt_full})
+    if src_full not in H or tgt_full not in H:
+        return json.dumps({"found": False, "reason": "endpoint not in composite", "source": src_full, "target": tgt_full})
+
     try:
-        path_nodes = nx.shortest_path(G, src_nid, tgt_nid)
+        path_nodes = nx.shortest_path(H, src_full, tgt_full, weight="weight")
     except (nx.NetworkXNoPath, nx.NodeNotFound):
-        hint = (
-            " (cross-repo paths require entries in the link table; see `<group>-links.json`)"
-            if composite
-            else ""
-        )
-        return f"No path between '{src_nid}' and '{tgt_nid}'.{hint}"
+        return json.dumps({"found": False, "reason": "no path", "source": src_full, "target": tgt_full})
+    except (nx.NetworkXError, MemoryError, RecursionError):
+        return json.dumps({"found": False, "reason": "search exceeded budget", "source": src_full, "target": tgt_full})
+
     hops = len(path_nodes) - 1
+    if hops + 1 > _SHORTEST_PATH_MAX_LEN:
+        return json.dumps({
+            "found": False,
+            "reason": f"path exceeds hard cap of {_SHORTEST_PATH_MAX_LEN} nodes",
+            "source": src_full,
+            "target": tgt_full,
+            "length": hops,
+        })
     if hops > max_hops:
-        return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
-    segments = []
-    for i in range(len(path_nodes) - 1):
-        u, v = path_nodes[i], path_nodes[i + 1]
-        edata = G.edges[u, v]
-        rel = edata.get("relation", "")
-        conf = edata.get("confidence", "")
-        method = edata.get("method")
-        tag = f" via {method}" if method else ""
-        conf_str = f" [{conf}]" if conf else ""
-        if i == 0:
-            segments.append(G.nodes[u].get("label", u))
-        segments.append(f"--{rel}{tag}{conf_str}--> {G.nodes[v].get('label', v)}")
-    return f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+        return json.dumps({
+            "found": False,
+            "reason": f"path exceeds max_hops={max_hops}",
+            "source": src_full,
+            "target": tgt_full,
+            "length": hops,
+        })
+
+    edges_payload, weakest = _path_edges_payload(H, path_nodes)
+    crosses = any(e["cross_repo"] for e in edges_payload)
+    return json.dumps({
+        "found": True,
+        "path": path_nodes,
+        "edges": edges_payload,
+        "weakest_link_confidence": weakest,
+        "length": hops,
+        "crosses_repos": crosses,
+    })
 
 
 # ---------------------------------------------------------------------------

@@ -831,6 +831,237 @@ print('OK')
     } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 
+// ---------------------------------------------------------------------------
+// shortest_path — cross-repo traversal via _xrepo_edges
+// ---------------------------------------------------------------------------
+
+function seedLinkedGraphFile(graphsDir, repoSlug, nodes, links) {
+    const data = {
+        directed: false,
+        multigraph: false,
+        graph: {},
+        nodes,
+        links,
+    };
+    writeFileSync(join(graphsDir, `${repoSlug}.json`), JSON.stringify(data));
+}
+
+test('shortest_path: cross-repo path traverses _xrepo_edges between two repos', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repoA', [
+            { id: 'A1', label: 'a1', norm_label: 'a1' },
+            { id: 'A2', label: 'a2', norm_label: 'a2' },
+        ], [
+            { source: 'A1', target: 'A2', relation: 'calls', confidence: 1.0 },
+        ]);
+        seedLinkedGraphFile(graphsDir, 'repoB', [
+            { id: 'B1', label: 'b1', norm_label: 'b1' },
+            { id: 'B2', label: 'b2', norm_label: 'b2' },
+        ], [
+            { source: 'B1', target: 'B2', relation: 'calls', confidence: 1.0 },
+        ]);
+        const linksFile = join(tmp, 'links.json');
+        writeFileSync(linksFile, JSON.stringify({
+            version: 1,
+            links: [
+                { source: 'repoA::A2', target: 'repoB::B1', relation: 'string_match', method: 'http', confidence: 0.7, discovered_at: '2026-05-08T00:00:00Z', channel: 'http', identifier: '/api/v1/orders/' },
+            ],
+        }));
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import shortest_path
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), Path(${JSON.stringify(linksFile)}))
+state.initial_load()
+out = json.loads(shortest_path(state, {'source': 'repoA::A1', 'target': 'repoB::B2'}))
+assert out['found'] is True, out
+assert out['path'] == ['repoA::A1', 'repoA::A2', 'repoB::B1', 'repoB::B2'], out
+assert out['crosses_repos'] is True, out
+assert out['length'] == 3, out
+assert out['weakest_link_confidence'] == 0.7, out
+xrepo_edges = [e for e in out['edges'] if e['cross_repo']]
+assert len(xrepo_edges) == 1
+assert xrepo_edges[0]['channel'] == 'http'
+assert xrepo_edges[0]['identifier'] == '/api/v1/orders/'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `cross-repo happy script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('shortest_path: no cross-repo link returns found=false', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repoA', [
+            { id: 'A1', label: 'a1', norm_label: 'a1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repoB', [
+            { id: 'B1', label: 'b1', norm_label: 'b1' },
+        ], []);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import shortest_path
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(shortest_path(state, {'source': 'repoA::A1', 'target': 'repoB::B1'}))
+assert out['found'] is False, out
+assert out['reason'] == 'no path', out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `no-link script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('shortest_path: weakest_link_confidence is the minimum across cross-repo hops', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repoA', [
+            { id: 'A1', label: 'a1', norm_label: 'a1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repoB', [
+            { id: 'B1', label: 'b1', norm_label: 'b1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repoC', [
+            { id: 'C1', label: 'c1', norm_label: 'c1' },
+        ], []);
+        const linksFile = join(tmp, 'links.json');
+        writeFileSync(linksFile, JSON.stringify({
+            version: 1,
+            links: [
+                { source: 'repoA::A1', target: 'repoB::B1', relation: 'r', method: 'http', confidence: 0.9, discovered_at: '2026-05-08T00:00:00Z' },
+                { source: 'repoB::B1', target: 'repoC::C1', relation: 'r', method: 'http', confidence: 0.4, discovered_at: '2026-05-08T00:00:00Z' },
+            ],
+        }));
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import shortest_path
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), Path(${JSON.stringify(linksFile)}))
+state.initial_load()
+out = json.loads(shortest_path(state, {'source': 'repoA::A1', 'target': 'repoC::C1'}))
+assert out['found'] is True, out
+assert out['weakest_link_confidence'] == 0.4, out
+assert out['crosses_repos'] is True
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `weakest-link script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('shortest_path: hard length cap of 12 nodes rejects long paths', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        // Build a single-repo linear chain of 15 nodes (14 hops); ensures
+        // the path length exceeds the 12-node hard cap regardless of
+        // max_hops. Also raise max_hops above the cap so the cap is the
+        // thing rejecting it.
+        const nodes = [];
+        const links = [];
+        for (let i = 0; i < 15; i++) {
+            nodes.push({ id: `n${i}`, label: `n${i}`, norm_label: `n${i}` });
+            if (i > 0) links.push({ source: `n${i - 1}`, target: `n${i}`, relation: 'calls', confidence: 1.0 });
+        }
+        seedLinkedGraphFile(graphsDir, 'r', nodes, links);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import shortest_path
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(shortest_path(state, {'source': 'r::n0', 'target': 'r::n14', 'max_hops': 50}))
+assert out['found'] is False, out
+assert 'cap' in out['reason'] or 'exceeds' in out['reason'], out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `length-cap script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent graph loading at startup
+// ---------------------------------------------------------------------------
+
+test('GraphState: concurrent startup load reads all graph files', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        for (const slug of ['alpha', 'beta', 'gamma', 'delta']) {
+            seedLinkedGraphFile(graphsDir, slug, [
+                { id: `${slug}1`, label: `${slug}-node`, norm_label: `${slug}-node` },
+            ], []);
+        }
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+assert sorted(state.graphs.keys()) == ['alpha', 'beta', 'delta', 'gamma'], list(state.graphs.keys())
+assert not state.unavailable, state.unavailable
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `concurrent-load script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('GraphState: concurrent startup load tolerates one corrupt graph', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        for (const slug of ['alpha', 'beta', 'gamma']) {
+            seedLinkedGraphFile(graphsDir, slug, [
+                { id: `${slug}1`, label: `${slug}-node`, norm_label: `${slug}-node` },
+            ], []);
+        }
+        writeFileSync(join(graphsDir, 'broken.json'), '{ this is not json');
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+assert sorted(state.graphs.keys()) == ['alpha', 'beta', 'gamma'], list(state.graphs.keys())
+assert 'broken' in state.unavailable, state.unavailable
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `concurrent-corrupt script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
 test('recent_activity: limit truncates and total_changed_files counts pre-truncation', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
     const tmp = mkTmp();
     try {

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -143,12 +145,45 @@ class GraphState:
         self._try_load_repo(tag, path)
 
     def _reload_all_graphs(self) -> None:
+        """Load every graph file under `graphs_dir`.
+
+        The JSON read + parse (the slow part) runs on a thread pool so a
+        50-module monorepo doesn't pay 30s of sequential I/O at startup.
+        State mutation (graphs dict, communities cache, label index)
+        happens single-threaded on the caller's thread once all parses
+        resolve, in graph-name order so stderr stays readable. Per-repo
+        failures stay contained per worker (Tier A item 5).
+        """
         files = _scan_graphs_dir(self.graphs_dir)
-        seen_tags: set[str] = set()
-        for f in files:
-            tag = f.stem
-            seen_tags.add(tag)
-            self._try_load_repo(tag, f)
+        seen_tags: set[str] = {f.stem for f in files}
+
+        max_workers = min(8, os.cpu_count() or 4)
+
+        def _worker(path: Path) -> tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str]]:
+            try:
+                m = path.stat().st_mtime
+            except OSError as exc:
+                return path.stem, path, None, None, f"stat failed ({exc})"
+            G, reason = _load_one_graph(path)
+            return path.stem, path, m, G, reason
+
+        results: list[tuple[str, Path, Optional[float], Optional[nx.Graph], Optional[str]]] = []
+        if files:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                results = list(pool.map(_worker, files))
+
+        # Apply results in graph-name order for predictable stderr.
+        for tag, path, m, G, reason in sorted(results, key=lambda r: r[0]):
+            if G is None:
+                self.unavailable[tag] = reason or "unknown error"
+                debug_log(f"repo '{tag}' unavailable: {self.unavailable[tag]}")
+                continue
+            self.unavailable.pop(tag, None)
+            self.graphs[tag] = G
+            self.mtimes[tag] = m  # type: ignore[assignment]
+            self.communities[tag] = communities_for(tag, m, G)
+            self.label_index.reload_repo(tag, G)
+
         for tag in list(self.graphs.keys()):
             if tag not in seen_tags:
                 self._drop_repo(tag)
@@ -227,10 +262,17 @@ class GraphState:
     # Composite view (multi-repo no-filter path)
     # ------------------------------------------------------------------
 
-    def composite_view(self) -> nx.Graph:
+    def composite_view(self, *, weighted: bool = False) -> nx.Graph:
         """Return a single graph that prefixes every per-repo node ID with
         `<tag>::` and overlays the cross-repo edges. Computed on demand; with
         typical fleet sizes (handful of repos) this is fast enough per call.
+
+        When `weighted=True`, edges carry a `weight` attribute used by
+        `shortest_path` so cross-repo hops are priced by their link
+        confidence (`1 / max(0.1, confidence)`) — high-confidence cross-repo
+        edges feel cheap, low-confidence ones feel expensive. Internal
+        per-repo edges weight 1.0. Each cross-repo edge is also tagged
+        `cross_repo=True` so callers can identify the hop afterwards.
         """
         H = nx.Graph()
         for tag, G in self.graphs.items():
@@ -241,12 +283,25 @@ class GraphState:
                 d.setdefault("local_id", nid)
                 H.add_node(full_id, **d)
             if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-                for u, v, _key, data in G.edges(keys=True, data=True):
-                    H.add_edge(f"{tag}::{u}", f"{tag}::{v}", **data)
+                edge_iter = ((u, v, data) for u, v, _k, data in G.edges(keys=True, data=True))
             else:
-                for u, v, data in G.edges(data=True):
-                    H.add_edge(f"{tag}::{u}", f"{tag}::{v}", **data)
+                edge_iter = G.edges(data=True)
+            for u, v, data in edge_iter:
+                attrs = dict(data)
+                if weighted:
+                    attrs["weight"] = 1.0
+                    attrs.setdefault("cross_repo", False)
+                H.add_edge(f"{tag}::{u}", f"{tag}::{v}", **attrs)
         for u, v, data in self.xrepo_edges.edges(data=True):
             if u in H and v in H:
-                H.add_edge(u, v, **data)
+                attrs = dict(data)
+                if weighted:
+                    conf = attrs.get("confidence")
+                    try:
+                        c = float(conf) if conf is not None else 0.1
+                    except (TypeError, ValueError):
+                        c = 0.1
+                    attrs["weight"] = 1.0 / max(0.1, c)
+                    attrs["cross_repo"] = True
+                H.add_edge(u, v, **attrs)
         return H
