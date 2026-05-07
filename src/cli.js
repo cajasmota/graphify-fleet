@@ -10,6 +10,7 @@ import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
 import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
+import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
 
 const VERSION = '0.2.0';
 
@@ -41,6 +42,11 @@ function help() {
     log.say('  docs init-cli <group>               headless CLI Q&A for docs config (no LLM)');
     log.say('                                       — prefer /generate-docs --setup-only in your IDE');
     log.say('                                         which seeds answers from the codebase');
+    log.say('');
+    log.say('GRAPHIFY PATCH (local)');
+    log.say('  patch graphify              apply repo_filter parameter patch (idempotent)');
+    log.say('  patch status                show patch status (applied / partial / unpatched)');
+    log.say('  patch revert                restore graphify from .gfleet-orig backup');
     log.say('');
     log.say('MONOREPO');
     log.say('  monorepo add    [group] [path]      pick monorepo + select modules (interactive)');
@@ -86,6 +92,11 @@ function doctor() {
         const r = run(py, ['-c', 'import mcp, watchdog']);
         if (r.code === 0) log.ok('graphify extras: mcp + watchdog');
         else              log.warn('graphify is missing mcp / watchdog extras (gfleet install will fix)');
+
+        const pStatus = graphifyPatchStatus();
+        if (pStatus.state === 'patched')        log.ok(`graphify patched (repo_filter parameter: ${pStatus.applied}/${pStatus.total} hunks)`);
+        else if (pStatus.state === 'partial')   log.warn(`graphify partially patched (${pStatus.applied}/${pStatus.total}) — likely upstream changed. Re-run: gfleet patch graphify`);
+        else if (pStatus.state === 'unpatched') log.warn('graphify unpatched (no repo_filter on MCP tools). Run: gfleet patch graphify');
     } else {
         log.warn('graphify not installed yet (gfleet install will install it)');
     }
@@ -149,6 +160,26 @@ export async function main(argv) {
                     case 'update':    skillsUpdate(); break;
                     case 'status':    skillsStatus(); break;
                     default: die('usage: gfleet skills {install|uninstall|update|status}');
+                }
+                break;
+            }
+            case 'patch': {
+                const sub = args[0];
+                const target = args[1];
+                if (target && target !== 'graphify') die(`only 'graphify' patch is supported (got: ${target})`);
+                switch (sub) {
+                    case 'graphify':
+                    case 'apply': patchGraphify(); break;
+                    case 'status': {
+                        const s = graphifyPatchStatus();
+                        if (s.state === 'no-graphify') log.warn('graphify not installed');
+                        else if (s.state === 'patched')   log.ok(`graphify patched (${s.applied}/${s.total} hunks) — ${s.path}`);
+                        else if (s.state === 'unpatched') log.warn(`graphify unpatched (run: gfleet patch graphify) — ${s.path}`);
+                        else log.warn(`graphify partially patched (${s.applied}/${s.total}) — graphify upstream may have changed. Run: gfleet patch graphify`);
+                        break;
+                    }
+                    case 'revert': unpatchGraphify(); break;
+                    default: die('usage: gfleet patch {graphify|status|revert}');
                 }
                 break;
             }

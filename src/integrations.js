@@ -235,25 +235,30 @@ const WINDSURF_MCP_PATHS = [
 ];
 
 export function addWindsurfGlobalMcp(group, groupGraph, repos = []) {
+    // Windsurf's mcp_config.json is GLOBAL (loaded by every session). If we
+    // register multiple graphify-* servers here, Windsurf can't disambiguate
+    // their tool names ("Duplicate tool name: mcp0_get_community"). So in
+    // Windsurf we register only the GROUP MCP. Repo-local queries in Windsurf
+    // are done by passing { repo: "<slug>" } as a filter argument to the
+    // group MCP — every node has a `repo` field. Claude Code uses per-project
+    // .mcp.json which CAN safely host multiple graphify-* servers because
+    // only one project's config is loaded per session.
     const py = graphifyPython();
     const groupServer = { command: py, args: ['-m', 'graphify.serve', groupGraph] };
     for (const p of WINDSURF_MCP_PATHS) {
         ensureDir(dirname(p));
         const obj = existsSync(p) ? readJson(p) : {};
         obj.mcpServers = obj.mcpServers ?? {};
-        // Group MCP
+        // Group MCP only
         obj.mcpServers[`graphify-${group}`] = groupServer;
-        // Per-repo MCPs
+        // Cleanup: remove any per-repo graphify-* entries from previous gfleet
+        // versions that erroneously registered them in Windsurf's global config.
         for (const r of repos) {
-            const repoGraph = join(r.path, 'graphify-out', 'graph.json');
-            obj.mcpServers[`graphify-${r.slug}`] = {
-                command: py,
-                args: ['-m', 'graphify.serve', repoGraph],
-            };
+            delete obj.mcpServers[`graphify-${r.slug}`];
         }
         writeJson(p, obj);
     }
-    log.info(`windsurf MCP: graphify-${group} (group) + ${repos.length} per-repo entries (×${WINDSURF_MCP_PATHS.length} paths)`);
+    log.info(`windsurf MCP: graphify-${group} (group only — Windsurf is global; use repo-filter for repo-local queries)`);
 }
 
 export function removeWindsurfGlobalMcp(group) {

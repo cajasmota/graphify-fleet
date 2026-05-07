@@ -1,13 +1,27 @@
-## graphify (group: {{group}}, two MCP servers — focused vs merged)
+## graphify (group: {{group}}, MCP setup differs per IDE)
 
-This project is part of the **{{group}}** group. Two MCP servers are configured:
+This project is part of the **{{group}}** group. The MCP servers available depend on which IDE you're running in:
+
+### In Claude Code — TWO graphify MCP servers (focused + merged)
+
+Claude Code reads per-project `.mcp.json`, so multiple graphify servers can coexist without tool-name collisions. You have:
 
 | MCP server | Graph it serves | When to use |
 |------------|----------------|-------------|
-| `graphify-{{repo_slug}}` | this repo only | **Default for repo-local questions** — architecture, refactoring, navigation within this codebase. No cross-repo noise. |
-| `graphify-{{group}}` | merged across all {{group}} repos | **Cross-repo questions only** — "how does mobile call the backend?", "what frontend hook calls this endpoint?", end-to-end flows. |
+| `graphify-{{repo_slug}}` | this repo only | **Default for repo-local questions** — architecture, refactoring, navigation within this codebase. Clean signal, no cross-repo noise. |
+| `graphify-{{group}}` | merged across all {{group}} repos | **Cross-repo questions only** — "how does mobile call the backend?", end-to-end flows, API contracts. |
 
 **Default choice rule**: use `graphify-{{repo_slug}}` first. Only switch to `graphify-{{group}}` when the question explicitly crosses repo boundaries.
+
+### In Windsurf / Cascade — ONE graphify MCP server (group only)
+
+Windsurf's MCP config is global (loaded by every session), so registering multiple graphify-* servers causes tool-name collisions ("Duplicate tool name"). Only the group MCP is registered.
+
+| MCP server | Graph it serves | When to use |
+|------------|----------------|-------------|
+| `graphify-{{group}}` | merged across all {{group}} repos | **Both repo-local AND cross-repo questions** |
+
+**Repo-local filtering in Windsurf**: when you want results scoped to this repo only, pass a `repo` filter argument to the MCP query — every node in the merged graph has a `repo: "<slug>"` field. The MCP tools (`query_graph`, `get_neighbors`) accept filtering, OR you can post-filter results client-side by checking each node's `repo` field. Current repo's slug: **`{{repo_slug}}`**.
 
 Group repos:
 {{repos_list}}
