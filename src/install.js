@@ -2,7 +2,7 @@ import { existsSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
     loadConfig, log, run, ensureGraphify, registerGroup, unregisterGroup, ensureDir,
-    GROUPS_DIR, getGitDir,
+    GROUPS_DIR, getGitDir, readRegistry, writeRegistry,
 } from './util.js';
 import {
     writeGraphifyignore, updateGitignore, writeMcpJson,
@@ -79,9 +79,27 @@ export async function install(configPath) {
 
         // Write portable manifest for teammate onboarding (commit this).
         writeGroupManifest(r.path, cfg.group, { ...cfg.options, docs: cfg.docs }, r, cfg.repos);
+        // For monorepo modules: also write a manifest at the monorepoRoot so
+        // a teammate cloning the monorepo can run `gfleet onboard` from the
+        // repo root (not just from inside a specific module).
+        if (r.monorepoRoot && r.monorepoRoot !== r.path) {
+            writeGroupManifest(r.monorepoRoot, cfg.group, { ...cfg.options, docs: cfg.docs }, r, cfg.repos);
+        }
 
-        // legacy global graph cleanup (was used by older gfleet versions)
-        run('graphify', ['global', 'remove', r.slug]);
+        // legacy global graph cleanup (was used by older gfleet versions).
+        // Gate behind a per-slug one-time flag in the registry so we don't
+        // spawn a python subprocess on every install for repos that have
+        // already been cleaned. Stderr suppressed since "not present" is the
+        // expected outcome.
+        try {
+            const reg = readRegistry();
+            reg.legacyGlobalRemoved = reg.legacyGlobalRemoved || {};
+            if (!reg.legacyGlobalRemoved[r.slug]) {
+                run('graphify', ['global', 'remove', r.slug], { stdio: ['ignore', 'ignore', 'ignore'] });
+                reg.legacyGlobalRemoved[r.slug] = new Date().toISOString();
+                writeRegistry(reg);
+            }
+        } catch {}
     }
 
     log.say('');

@@ -66,13 +66,68 @@ Cross-cutting concerns (auth, permissions, error handling) are documented once i
 ### Documentation freshness
 
 - Each generated doc tracks its source files in `docs/.metadata.json`.
-- Post-commit hook auto-maintains `docs/.stale.md` listing docs likely affected by recent changes.
+- The post-commit / post-merge / post-checkout hooks auto-maintain `docs/.stale.md` and a per-user mirror at `~/.cache/graphify-fleet/{{group}}/<repo-slug>/stale.json`.
 - When you finish a non-trivial code change:
   1. Read `docs/.stale.md` to see which docs are now stale.
   2. If the user is wrapping up a task, suggest:
      `Docs may be stale — gfleet docs {{group}} --refresh refreshes affected sections.`
   3. Do NOT regenerate docs automatically. Suggest the command; let the user decide.
 - Slash command for full or partial regeneration: `/generate-docs`
+
+### Proactivity rules — when to surface things on your own
+
+<!-- gfleet:proactivity:start v=1 -->
+
+These three triggers tell you when to bring something up *without being asked*. The goal is install-and-forget UX: the user runs `gfleet wizard` once and from then on you (the agent) handle everything that needs surfacing.
+
+Before any of the rules below, **check the silenced-session marker**:
+
+- File: `~/.cache/graphify-fleet/{{group}}/silenced-sessions.json`
+- Schema: `{ "sessions": [{ "workspace": "<abs-path>", "day": "YYYY-MM-DD", "until_iso": "..." }] }`
+- If a non-expired entry exists matching the current IDE workspace (or just the current day), DO NOT surface staleness or setup prompts again this session. Acknowledge once and move on.
+- The user can re-trigger by saying "show stale docs again" or "unsilence gfleet".
+
+The user explicitly silences via phrases like "skip docs for now", "don't remind me about stale docs", "ignore staleness this session". On any such phrase, append a session entry (TTL ~4 hours) before continuing.
+
+#### Rule 1 — On session start (first turn only)
+
+Run these checks once at the start of a session and surface at most ONE of them:
+
+1. **Stale docs.** If `docs/.stale.md` exists and has any `[ ]` entries, mention it on your first response:
+   > "Heads up: N doc sections are stale since your last commit. Refresh: `/generate-docs --refresh`."
+   Do not repeat this in later turns of the same session unless asked.
+
+2. **Docs not yet set up.** If `~/.graphify-fleet/groups/{{group}}/docs-config.json` exists but `domain` is `null` (the wizard wrote a stub), surface once:
+   > "Docs aren't fully set up yet — want to answer 5 quick questions to seed it? Run `/generate-docs --setup-only`."
+
+3. **Monorepo drift.** If `pnpm-workspace.yaml`, `package.json` (workspaces), `nx.json`, `turbo.json`, or `lerna.json` was modified in the last commit and a new module appears in the manifest that isn't in this group's fleet config, surface:
+   > "Looks like N new packages were added. Want me to register them with `gfleet monorepo add {{group}}`?"
+
+If multiple apply, prioritize 1 > 3 > 2.
+
+#### Rule 2 — On topic match
+
+When the user asks about a file, module, or concept whose doc section is currently listed in `docs/.stale.md`, prepend a single line BEFORE answering:
+
+> "Note: `<doc-path>` is flagged stale (sources changed N commits ago). I'll answer from current code; run `/generate-docs --section <doc-path>` to refresh the doc."
+
+Then answer normally. Do NOT regenerate docs without the user's say-so.
+
+#### Rule 3 — On task wrap-up
+
+If the user signals task completion ("done", "let's commit", "looks good", "ship it") AND any sections went stale during the session OR `.stale.md` still has open entries, suggest:
+
+> "Before you wrap up: N doc sections are stale (oldest <date>). Refresh: `gfleet docs {{group}} --refresh` or `/generate-docs --refresh`."
+
+If the user declines, write a silenced-session entry and don't bring it up again this session.
+
+#### Otherwise — silent
+
+If none of the triggers above apply, do not volunteer anything about gfleet, staleness, monorepos, or docs. Answer the user's question and stop.
+
+<!-- gfleet:proactivity:end -->
+
+
 
 ### Knowledge feedback loop — `graphify save-result`
 

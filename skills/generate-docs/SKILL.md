@@ -34,10 +34,10 @@ The user will trigger you in one of these forms:
 - `/generate-docs --setup-only` — runs Pass 0 (domain Q&A) only and stops
 - `/generate-docs --autonomous` — no plan-confirmation prompts; use cached config
 - `/generate-docs --group` — group-level synthesis only (assumes per-repo docs already exist)
-- `/generate-docs --refresh` — only regenerate sections whose sources changed (idempotent)
+- `/generate-docs --refresh` — only regenerate sections listed in `docs/.stale.md` UNION sections whose `metadata.sources[].sha` no longer matches the current file SHA (idempotent)
 - `/generate-docs --section <path>` — regenerate one section (e.g. `modules/orders/services.md`)
-- `/generate-docs --module <name>` — regenerate one whole module
-- `/generate-docs --since <gitref>` — regenerate sections affected by commits since `<gitref>`
+- `/generate-docs --module <name>` — regenerate every section whose doc path begins with `modules/<name>/` (the orchestrator finds these on disk and skips Passes 1/2 module-discovery for the rest)
+- `/generate-docs --since <gitref>` — orchestrator runs `git diff --name-only <gitref> HEAD` and treats those files as the "stale" set, then proceeds like `--refresh`
 
 If the user passes a path, treat that as the repo root. Default to `.`.
 

@@ -59,12 +59,16 @@ export function skillsInstall() {
     // 4. Per-repo Windsurf workflows (one per repo in every registered group)
     const groups = listRegistered();
     let workflowCount = 0;
+    const skipped = [];
     for (const group of Object.keys(groups)) {
         const cfgPath = groups[group].config;
         if (!existsSync(cfgPath)) continue;
         const cfg = loadConfig(cfgPath);
         for (const r of cfg.repos) {
-            if (!existsSync(r.path)) continue;
+            if (!existsSync(r.path)) {
+                skipped.push(`${group}/${r.slug} (path missing: ${r.path})`);
+                continue;
+            }
             const dst = repoWorkflowPath(r.path);
             ensureDir(dirname(dst));
             copyFileSync(WORKFLOW_TEMPLATE, dst);
@@ -72,6 +76,10 @@ export function skillsInstall() {
         }
     }
     if (workflowCount > 0) log.ok(`Windsurf workflows: ${workflowCount} repo(s) updated`);
+    if (skipped.length > 0) {
+        log.warn(`Skipped ${skipped.length} repo(s) with missing paths:`);
+        for (const s of skipped) log.info(`  - ${s}`);
+    }
 
     // 5. extend-convention skill (companion)
     if (existsSync(EXTEND_SKILL_SRC)) {

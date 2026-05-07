@@ -85,57 +85,154 @@ function detectLerna(root) {
     } catch { return null; }
 }
 
-function detectMultiPackage(root) {
-    // Fallback: walk one level deep, look for dirs containing package.json,
-    // pyproject.toml, go.mod, or Cargo.toml.
+const MULTI_IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'venv', '.expo', 'target', '.next', '.turbo', '.cache']);
+const MANIFEST_FILES = ['package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml'];
+
+function detectMultiPackage(root, depth = 2) {
+    // Walk up to `depth` levels deep looking for module manifests. Stops
+    // descending into a directory once a manifest is found there (to avoid
+    // double-counting nested packages within a workspace).
     const found = [];
-    const ignore = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'venv', '.expo']);
-    try {
-        for (const entry of readdirSync(root, { withFileTypes: true })) {
-            if (!entry.isDirectory() || ignore.has(entry.name) || entry.name.startsWith('.')) continue;
-            const sub = join(root, entry.name);
-            const hasManifest = ['package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml']
-                .some(m => existsSync(join(sub, m)));
+    function walk(dir, relPrefix, levelsLeft) {
+        if (levelsLeft < 0) return;
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); }
+        catch { return; }
+        for (const entry of entries) {
+            if (!entry.isDirectory() || MULTI_IGNORE.has(entry.name) || entry.name.startsWith('.')) continue;
+            const sub = join(dir, entry.name);
+            const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+            const hasManifest = MANIFEST_FILES.some(m => existsSync(join(sub, m)));
             if (hasManifest) {
                 found.push({
-                    rel: entry.name,
+                    rel,
                     abs: sub,
                     name: entry.name,
                     stack: detectStack(sub),
                     loc: estimateLoc(sub),
                 });
+                continue;  // don't recurse into a packaged module
             }
+            walk(sub, rel, levelsLeft - 1);
         }
-    } catch {}
+    }
+    walk(root, '', depth - 1);
     if (found.length < 2) return null;  // not a monorepo if only 1 package
     return { modules: found };
 }
 
+// Expand brace-alternation in a glob: "{a,b}/*" → ["a/*", "b/*"]. Only
+// handles single-level (non-nested) braces — sufficient for the common
+// pnpm/npm workspace forms.
+function expandBraces(glob) {
+    const m = glob.match(/^([^{]*)\{([^{}]+)\}(.*)$/);
+    if (!m) return [glob];
+    const [, head, alts, tail] = m;
+    const out = [];
+    for (const a of alts.split(',').map(s => s.trim())) {
+        out.push(...expandBraces(`${head}${a}${tail}`));
+    }
+    return out;
+}
+
+// Expand "**" by listing all subdirectories under a base recursively (bounded).
+// Returns an array of relative path prefixes (from `from`).
+function listAllSubdirs(from, maxDepth = 4) {
+    const out = [''];
+    function walk(dir, rel, levelsLeft) {
+        if (levelsLeft < 0) return;
+        let entries;
+        try { entries = readdirSync(dir, { withFileTypes: true }); }
+        catch { return; }
+        for (const e of entries) {
+            if (!e.isDirectory() || e.name.startsWith('.') || MULTI_IGNORE.has(e.name)) continue;
+            const r = rel ? `${rel}/${e.name}` : e.name;
+            out.push(r);
+            walk(join(dir, e.name), r, levelsLeft - 1);
+        }
+    }
+    walk(from, '', maxDepth - 1);
+    return out;
+}
+
 function expandGlobs(root, globs) {
-    // Simple glob expansion: handle "packages/*", "packages/foo", "!ignored".
-    // Doesn't handle ** — fine for monorepo workspace conventions.
-    const negations = globs.filter(g => g.startsWith('!')).map(g => g.slice(1));
-    const positives = globs.filter(g => !g.startsWith('!'));
+    // Glob expansion: brace alternation, "packages/*", "apps/*/lib", "!negated",
+    // and a basic "**" recursive wildcard. Not full-minimatch — covers the
+    // shapes commonly seen in pnpm/npm workspaces.
+    const expanded = [];
+    for (const g of globs) {
+        for (const eg of expandBraces(g)) expanded.push(eg);
+    }
+    const negations = expanded.filter(g => g.startsWith('!')).map(g => g.slice(1));
+    const positives = expanded.filter(g => !g.startsWith('!'));
     const matched = new Set();
+
+    function matchSingleStarSegment(prefixRel, restSegments) {
+        // Walks one level under prefixRel, expanding the next "*" segment.
+        const baseDir = join(root, prefixRel);
+        if (!existsSync(baseDir)) return [];
+        let dirs = [];
+        try {
+            dirs = readdirSync(baseDir, { withFileTypes: true })
+                .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+                .map(e => e.name);
+        } catch { return []; }
+        const results = [];
+        for (const d of dirs) {
+            const next = prefixRel ? `${prefixRel}/${d}` : d;
+            results.push(...expandSegments(next, restSegments));
+        }
+        return results;
+    }
+
+    function expandSegments(prefixRel, segments) {
+        if (segments.length === 0) return [prefixRel];
+        const [seg, ...rest] = segments;
+        if (seg === '*') {
+            return matchSingleStarSegment(prefixRel, rest);
+        }
+        if (seg === '**') {
+            const subs = listAllSubdirs(join(root, prefixRel), 4);
+            const out = [];
+            for (const s of subs) {
+                const next = s ? (prefixRel ? `${prefixRel}/${s}` : s) : prefixRel;
+                out.push(...expandSegments(next, rest));
+            }
+            return out;
+        }
+        if (seg.includes('*')) {
+            // partial wildcard like "lib*"
+            const re = new RegExp('^' + seg.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+            const baseDir = join(root, prefixRel);
+            if (!existsSync(baseDir)) return [];
+            let dirs = [];
+            try {
+                dirs = readdirSync(baseDir, { withFileTypes: true })
+                    .filter(e => e.isDirectory() && !e.name.startsWith('.') && re.test(e.name))
+                    .map(e => e.name);
+            } catch { return []; }
+            const out = [];
+            for (const d of dirs) {
+                const next = prefixRel ? `${prefixRel}/${d}` : d;
+                out.push(...expandSegments(next, rest));
+            }
+            return out;
+        }
+        // Literal segment
+        const next = prefixRel ? `${prefixRel}/${seg}` : seg;
+        return expandSegments(next, rest);
+    }
+
     for (const glob of positives) {
         if (!glob.includes('*')) {
             const abs = join(root, glob);
             if (existsSync(abs)) matched.add(glob);
             continue;
         }
-        // "packages/*" → list packages/, take dirs
-        const [dir, pat] = glob.split('/*');
-        const baseDir = join(root, dir);
-        if (!existsSync(baseDir)) continue;
-        try {
-            for (const e of readdirSync(baseDir, { withFileTypes: true })) {
-                if (e.isDirectory() && !e.name.startsWith('.')) {
-                    matched.add(`${dir}/${e.name}${pat || ''}`);
-                }
-            }
-        } catch {}
+        const segments = glob.split('/').filter(Boolean);
+        for (const r of expandSegments('', segments)) matched.add(r);
     }
-    // Apply negations
+    // Apply negations (simple literal match)
     for (const n of negations) matched.delete(n);
     return [...matched]
         .filter(rel => {
@@ -301,7 +398,13 @@ export async function monorepoAdd({ group, path, modules } = {}) {
     log.info(`scanning ${monorepoAbs} ...`);
     const detected = detectMonorepo(monorepoAbs);
     if (!detected) {
-        cancel(`no monorepo detected at ${monorepoAbs} (no pnpm-workspace.yaml / package.json workspaces / nx.json / turbo.json / lerna.json / multi-package layout)`);
+        log.warn(`no monorepo detected at ${monorepoAbs}`);
+        log.info('  Looked for: pnpm-workspace.yaml, package.json workspaces, nx.json,');
+        log.info('              turbo.json, lerna.json, or multi-package layout (depth 2).');
+        log.info('  If this is a deeper or non-standard layout, edit the config directly to');
+        log.info('  add a `{ "type": "monorepo", "path": ..., "modules": [{ "path": ..., "stack": ... }] }`');
+        log.info('  entry under `repos`, then run `gfleet install <group>`.');
+        cancel('cancelled');
         process.exit(1);
     }
     log.ok(`detected ${detected.kind} workspace · ${detected.modules.length} module(s)`);

@@ -8,7 +8,7 @@ import { install, uninstall } from './install.js';
 import * as ops from './ops.js';
 import { wizard } from './wizard.js';
 import { skillsInstall, skillsUninstall, skillsUpdate, skillsStatus } from './skills.js';
-import { docsInit, docsStatus, docsRun, docsPath } from './docs.js';
+import { docsInit, docsStatus, docsRun, docsPath, marksStale } from './docs.js';
 import { monorepoAdd, monorepoRemove, monorepoList } from './monorepo.js';
 import { applyPatch as patchGraphify, revertPatch as unpatchGraphify, checkPatchStatus as graphifyPatchStatus } from './patches/graphify-repo-filter.js';
 import { onboard } from './onboard.js';
@@ -18,65 +18,83 @@ import { conventionsList, conventionsAdd, conventionsRemove } from './convention
 const VERSION = '0.2.0';
 
 function help() {
-    log.say(`gfleet ${VERSION} — orchestrate graphify across multiple related repos.`);
+    log.say(`gfleet ${VERSION} — install once. The agent in your IDE handles the rest.`);
+    log.say('');
+    log.say('SETUP (run once)');
+    log.say('  wizard                         interactive first-time setup');
+    log.say('  onboard      [path]            join an existing group after git clone');
+    log.say('');
+    log.say('OPERATE (rarely needed)');
+    log.say('  update       [--refresh-rules] pull latest gfleet, redeploy skills, repatch graphify');
+    log.say('  doctor                         verify everything is wired correctly');
+    log.say('  status       [group]           show what is running');
+    log.say('  list                           show registered groups (alias: ls)');
+    log.say('');
+    log.say('REPAIR (when things misbehave)');
+    log.say('  rebuild | reset | remerge      force regenerate per-repo or group graphs');
+    log.say('  uninstall    [group] [--purge] remove gfleet from a group');
+    log.say('');
+    log.say('For all commands: gfleet help advanced');
+}
+
+function helpAdvanced() {
+    log.say(`gfleet ${VERSION} — advanced reference.`);
+    log.say('');
+    log.say('Most of the commands below normally run automatically (wizard / update / hooks / agent).');
+    log.say('Only use them if you know why.');
     log.say('');
     log.say('USAGE');
     log.say('  gfleet <command> [<group-name> | <config.json>] [slug]');
-    log.say('');
     log.say('  After install, commands accept the group NAME (e.g. upvate) instead of the config path.');
     log.say('  Omit the argument entirely to fan out across all registered groups.');
     log.say('');
     log.say('SETUP');
-    log.say('  wizard                              interactive first-time setup (creates config + installs)');
-    log.say('  onboard   [path]                    join an existing group after git clone (reads .gfleet/group.json)');
-    log.say('  update    [--refresh-rules]         git pull gfleet, npm install, redeploy skills + patch');
-    log.say('                                       --refresh-rules also re-runs install on every registered group');
-    log.say('  doctor                              check prerequisites');
-    log.say('  install   <config.json>             install fleet group + register it');
-    log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs (purge = also delete graphify-out)');
+    log.say('  wizard                              interactive first-time setup');
+    log.say('  onboard   [path]                    join an existing group after git clone');
+    log.say('  update    [--refresh-rules]         pull latest gfleet, redeploy skills, repatch graphify');
+    log.say('  doctor                              verify everything is wired correctly');
+    log.say('  install   <config.json>             [auto via wizard/onboard] install fleet group + register');
+    log.say('  uninstall [group|config] [--purge]  remove watchers, hooks, configs');
     log.say('');
-    log.say('SKILLS (generate-docs)');
+    log.say('SKILLS (generate-docs)  [auto via wizard / update]');
     log.say('  skills install                      install /generate-docs skill (Claude Code + Windsurf)');
     log.say('  skills uninstall');
     log.say('  skills update                       re-copy from local graphify-fleet repo');
     log.say('  skills status                       show what is installed where');
     log.say('');
-    log.say('DOCS');
+    log.say('DOCS  [agent-driven; surface in your IDE, not here]');
     log.say('  docs status   [group]               show generated docs + stale sections');
-    log.say('  docs run      <group>               instructions for invoking /generate-docs in IDE');
+    log.say('  docs run      <group>               instructions for /generate-docs in IDE');
     log.say('  docs path     <group>               print the group docs path');
-    log.say('  docs init-cli <group>               headless CLI Q&A for docs config (no LLM)');
-    log.say('                                       — prefer /generate-docs --setup-only in your IDE');
-    log.say('                                         which seeds answers from the codebase');
+    log.say('  docs init-cli <group>               headless CLI Q&A — prefer /generate-docs --setup-only');
+    log.say('  (docs mark-stale --stdin            internal hook entry point — not for direct use)');
     log.say('');
-    log.say('CONVENTIONS (extend the generate-docs skill)');
+    log.say('CONVENTIONS  [power user — usually only one ever needs this]');
     log.say('  conventions list                show built-in + user-added stack conventions');
-    log.say('  conventions add [--name X]      interactive: create stub for a new stack, then');
-    log.say('                                  run /extend-convention in your IDE to fill it in');
-    log.say('  conventions remove              remove a user-added convention (interactive)');
+    log.say('  conventions add [--name X]      stub a new stack, fill via /extend-convention in IDE');
+    log.say('  conventions remove              remove a user-added convention');
     log.say('');
-    log.say('GRAPHIFY PATCH (local)');
+    log.say('GRAPHIFY PATCH  [auto on every ensureGraphify / skills install]');
     log.say('  patch graphify              apply repo_filter parameter patch (idempotent)');
     log.say('  patch status                show patch status (applied / partial / unpatched)');
     log.say('  patch revert                restore graphify from .gfleet-orig backup');
     log.say('');
-    log.say('MONOREPO');
-    log.say('  monorepo add    [group] [path]      pick monorepo + select modules (interactive)');
-    log.say('                                       text args: --modules pkg/a,pkg/b   for scripting');
-    log.say('  monorepo remove [group] [path]      deselect modules (interactive)');
+    log.say('MONOREPO  [agent surfaces this when modules drift]');
+    log.say('  monorepo add    [group] [path]      pick monorepo + select modules');
+    log.say('  monorepo remove [group] [path]      deselect modules');
     log.say('  monorepo list                       show indexed monorepo modules across all groups');
     log.say('');
     log.say('INSPECT');
     log.say('  list  (or: ls)                      show all registered groups + node counts');
     log.say('  status    [group|config]            watcher state + node/edge counts (no arg = all)');
-    log.say('  help                                show this message');
+    log.say('  help [advanced]                     show help (default = primary; advanced = full)');
     log.say('');
-    log.say('REBUILD');
+    log.say('REPAIR / REBUILD');
     log.say('  rebuild   [group|config] [slug]     force AST rebuild (after deletions)');
     log.say('  reset     [group|config] [slug]     wipe graphify-out/ and rebuild from scratch');
     log.say('  remerge   [group|config]            re-merge group graph (no rebuild)');
     log.say('');
-    log.say('WATCHERS');
+    log.say('WATCHERS  [self-healing via launchd KeepAlive / systemd Restart=always]');
     log.say('  start     [group|config]            load watchers');
     log.say('  stop      [group|config]            unload watchers');
     log.say('  restart   [group|config]');
@@ -145,7 +163,12 @@ export async function main(argv) {
     try {
         switch (cmd) {
             case undefined: case '':         showRegistryOrHelp(); break;
-            case 'help': case '-h': case '--help': help(); break;
+            case 'help': case '-h': case '--help': {
+                const flag = args[0];
+                if (flag === 'advanced' || flag === '--advanced' || flag === '--all') helpAdvanced();
+                else help();
+                break;
+            }
             case 'doctor':    doctor(); break;
             case 'wizard': case 'new': await wizard(); break;
             case 'onboard': await onboard(args[0] ?? '.'); break;
@@ -260,7 +283,24 @@ export async function main(argv) {
                     case 'status':   await docsStatus(target); break;
                     case 'run':      docsRun(target); break;
                     case 'path':     docsPath(target); break;
-                    default: die('usage: gfleet docs {init-cli|status|run|path} [group]');
+                    case 'mark-stale': {
+                        // Internal — invoked by git hooks. Reads paths from stdin.
+                        // Flags:
+                        //   --group <name>   (required)
+                        //   --hook <name>    (post-commit | post-merge | post-checkout)
+                        //   --range <a..b>   (informational)
+                        //   --repo <slug>    (limit to one repo in the group)
+                        //   --stdin          (read changed file paths from stdin)
+                        const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
+                        const group = get('--group');
+                        const hook = get('--hook') || 'post-commit';
+                        const range = get('--range') || null;
+                        const repoFilter = get('--repo') || null;
+                        const lines = args.includes('--stdin') ? null : [];
+                        await marksStale({ group, hook, range, repoFilter, lines });
+                        break;
+                    }
+                    default: die('usage: gfleet docs {init-cli|status|run|path|mark-stale} [group]');
                 }
                 break;
             }

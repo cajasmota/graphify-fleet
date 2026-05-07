@@ -46,6 +46,17 @@ function Test-Cmd($name) {
     return [bool] (Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+# Microsoft Store ships a "python.exe" stub at %LOCALAPPDATA%\Microsoft\WindowsApps
+# that, when executed, opens the Store. Detect and skip it so we don't accidentally
+# launch the Store mid-install.
+function Test-RealPython {
+    $cmd = Get-Command 'python' -ErrorAction SilentlyContinue
+    if (-not $cmd) { return $null }
+    $src = $cmd.Source
+    if ($src -and $src -match '\\WindowsApps\\') { return $null }  # Store stub
+    return $src
+}
+
 function Install-ViaWinget($id, $friendlyName) {
     if (-not (Test-Cmd 'winget')) {
         Err "$friendlyName not installed and winget is unavailable. Install $friendlyName manually and re-run this script."
@@ -112,17 +123,32 @@ if (Test-Cmd 'uv') {
 }
 
 # python 3.10+ (uv can install Python on demand for graphify)
-if (Test-Cmd 'python') {
-    $pyVer = (python --version 2>&1) -replace 'Python ',''
-    $pyMajor = [int]($pyVer -split '\.')[0]
-    $pyMinor = [int]($pyVer -split '\.')[1]
-    if ($pyMajor -ge 3 -and $pyMinor -ge 10) {
-        Ok "python: $pyVer"
-    } else {
-        Warn "python $pyVer is too old (need 3.10+); uv will provision one for graphify"
+# Prefer the Windows 'py' launcher when present; otherwise check 'python'
+# but skip the Microsoft Store stub at %LOCALAPPDATA%\Microsoft\WindowsApps.
+$realPython = Test-RealPython
+$pyCheckCmd = $null
+if (Test-Cmd 'py') {
+    $pyCheckCmd = 'py'
+} elseif ($realPython) {
+    $pyCheckCmd = 'python'
+}
+
+if ($pyCheckCmd) {
+    try {
+        $pyVer = (& $pyCheckCmd --version 2>&1) -replace 'Python ',''
+        $parts = $pyVer -split '\.'
+        $pyMajor = [int]$parts[0]
+        $pyMinor = if ($parts.Count -ge 2) { [int]($parts[1] -replace '\D','') } else { 0 }
+        if ($pyMajor -ge 3 -and $pyMinor -ge 10) {
+            Ok "python: $pyVer (via $pyCheckCmd)"
+        } else {
+            Warn "python $pyVer is too old (need 3.10+); uv will provision one for graphify"
+        }
+    } catch {
+        Warn 'python version unclear; uv will provision one for graphify on first use'
     }
 } else {
-    Warn 'python not found; uv will provision one for graphify on first use'
+    Warn 'python not found (or only the Microsoft Store stub is present); uv will provision one for graphify on first use'
 }
 
 Say ''
@@ -166,18 +192,43 @@ if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Force -Path $BinDi
 $gfleetTarget = Join-Path $InstallDir 'bin\gfleet'
 $gfleetCmd = Join-Path $BinDir 'gfleet.cmd'
 
-# Windows .cmd shim that invokes node on the JS shim
+# Windows .cmd shim that invokes node on the JS shim.
+# Note: bin/gfleet has no .js extension but Node treats it as ESM via the
+# repo's package.json "type":"module". The .cmd verifies node is on PATH at
+# invocation time so we get a clear error rather than a cryptic one.
 @"
 @echo off
+where node >NUL 2>NUL
+if errorlevel 1 (
+    echo gfleet: 'node' not found on PATH. Install Node 18.19+ or open a fresh shell. 1>&2
+    exit /b 1
+)
 node "$gfleetTarget" %*
 "@ | Set-Content -Path $gfleetCmd -Encoding ascii
 
 Ok "shim written: $gfleetCmd"
 
-# Add BinDir to user PATH if missing
+# Add BinDir to user PATH if missing.
+# Re-read the User PATH at write time to minimize the read/write race window
+# with other processes mutating user PATH.
+function Normalize-PathEntry($p) {
+    if (-not $p) { return '' }
+    return ($p.TrimEnd('\','/').ToLowerInvariant())
+}
+$binNorm = Normalize-PathEntry $BinDir
 $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-if (-not ($userPath -split ';' | Where-Object { $_ -ieq $BinDir })) {
-    [System.Environment]::SetEnvironmentVariable('Path', "$userPath;$BinDir", 'User')
+$entries = @()
+if ($userPath) { $entries = $userPath -split ';' }
+$alreadyPresent = $false
+foreach ($e in $entries) {
+    if ((Normalize-PathEntry $e) -eq $binNorm) { $alreadyPresent = $true; break }
+}
+if (-not $alreadyPresent) {
+    # Re-read just before write to shrink the race window.
+    $userPathLatest = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $sep = if ($userPathLatest -and -not $userPathLatest.EndsWith(';')) { ';' } else { '' }
+    $newPath = "$userPathLatest$sep$BinDir"
+    [System.Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
     Ok "added $BinDir to user PATH"
     Warn 'Open a new PowerShell window to use the new PATH (current session has been updated)'
     $env:Path = "$env:Path;$BinDir"

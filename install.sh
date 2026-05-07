@@ -113,12 +113,28 @@ if [ "$need_install_node" = 1 ]; then
                 ;;
         esac
     fi
-    fnm install 22 >/dev/null 2>&1 || fnm install 20 >/dev/null 2>&1 || true
+    fnm install 22 || fnm install 20 || true
     fnm use 22 >/dev/null 2>&1 || fnm use 20 >/dev/null 2>&1 || {
         err "Could not select a Node version. Install Node 18.19+ manually."
         exit 1
     }
-    ok "node installed: $(node -v)"
+    # Re-evaluate fnm env so PATH points at the just-installed node for the
+    # rest of this script (npm install, gfleet doctor, etc.).
+    eval "$(fnm env --use-on-cd 2>/dev/null || fnm env)"
+    hash -r 2>/dev/null || true
+    if ! command -v node >/dev/null 2>&1; then
+        err "fnm reported success but 'node' is still not on PATH."
+        info "Try opening a new shell and re-running this script, or install Node 18.19+ manually."
+        exit 1
+    fi
+    POST_NODE_VER="$(node -v 2>/dev/null | sed 's/^v//' | head -1)"
+    POST_NODE_MAJOR="${POST_NODE_VER%%.*}"
+    if ! [[ "$POST_NODE_MAJOR" =~ ^[0-9]+$ ]] || [ "$POST_NODE_MAJOR" -lt 18 ]; then
+        err "After fnm install, node reports v${POST_NODE_VER:-unknown} (need 18+)."
+        info "Install Node 18.19+ manually and re-run this script."
+        exit 1
+    fi
+    ok "node installed: v$POST_NODE_VER"
 fi
 
 # uv
@@ -146,12 +162,19 @@ fi
 # Python 3.10+ (uv can install Python if missing)
 if command -v python3 >/dev/null 2>&1; then
     PY_VER="$(python3 --version 2>&1 | awk '{print $2}')"
-    PY_MAJOR="${PY_VER%%.*}"
-    PY_MINOR="${PY_VER#*.}"; PY_MINOR="${PY_MINOR%%.*}"
-    if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 10 ]; then
-        ok "python3: $PY_VER"
+    # Strip any trailing "+" or other build-metadata suffix some distros print.
+    PY_VER_CLEAN="${PY_VER//+/}"
+    PY_MAJOR="${PY_VER_CLEAN%%.*}"
+    PY_MINOR_RAW="${PY_VER_CLEAN#*.}"
+    PY_MINOR="${PY_MINOR_RAW%%.*}"
+    if [[ "$PY_MAJOR" =~ ^[0-9]+$ ]] && [[ "$PY_MINOR" =~ ^[0-9]+$ ]]; then
+        if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 10 ]; then
+            ok "python3: $PY_VER"
+        else
+            warn "python3 $PY_VER is too old (need 3.10+); uv will install one for graphify"
+        fi
     else
-        warn "python3 $PY_VER is too old (need 3.10+); uv will install one for graphify"
+        warn "python3 version unclear (got: '$PY_VER'); uv will provision one for graphify"
     fi
 else
     warn "python3 not found; uv will provision one for graphify"
@@ -194,7 +217,15 @@ GFLEET_BIN_TARGET="$INSTALL_DIR/bin/gfleet"
 GFLEET_BIN_LINK="$BIN_DIR/gfleet"
 
 if [ -e "$GFLEET_BIN_LINK" ] && [ ! -L "$GFLEET_BIN_LINK" ]; then
-    warn "$GFLEET_BIN_LINK exists and isn't a symlink. Leaving it alone."
+    if [ -d "$GFLEET_BIN_LINK" ]; then
+        err "$GFLEET_BIN_LINK is a directory; refusing to overwrite. Move/remove it and re-run."
+        exit 1
+    fi
+    BACKUP="${GFLEET_BIN_LINK}.gfleet-bak"
+    warn "$GFLEET_BIN_LINK exists and isn't a symlink. Backing up to $BACKUP"
+    mv -f "$GFLEET_BIN_LINK" "$BACKUP"
+    ln -sf "$GFLEET_BIN_TARGET" "$GFLEET_BIN_LINK"
+    ok "symlinked: $GFLEET_BIN_LINK → $GFLEET_BIN_TARGET (previous file at $BACKUP)"
 elif [ -L "$GFLEET_BIN_LINK" ] && [ "$(readlink "$GFLEET_BIN_LINK")" = "$GFLEET_BIN_TARGET" ]; then
     ok "symlink already in place: $GFLEET_BIN_LINK"
 else
@@ -208,11 +239,35 @@ case ":$PATH:" in
     *":$BIN_DIR:"*) ok "$BIN_DIR is already on PATH" ;;
     *)
         warn "$BIN_DIR is not on PATH"
-        info "Add this to your shell rc (~/.zshrc, ~/.bashrc):"
+        # Detect the user's shell and recommend the right rc file.
+        SHELL_NAME="$(basename "${SHELL:-}")"
+        case "$SHELL_NAME" in
+            zsh)
+                RC_FILE="$HOME/.zshrc"
+                RC_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+                ;;
+            bash)
+                if [ -f "$HOME/.bash_profile" ] && [ "$PLATFORM" = "darwin" ]; then
+                    RC_FILE="$HOME/.bash_profile"
+                else
+                    RC_FILE="$HOME/.bashrc"
+                fi
+                RC_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+                ;;
+            fish)
+                RC_FILE="$HOME/.config/fish/config.fish"
+                RC_LINE="set -gx PATH $BIN_DIR \$PATH"
+                ;;
+            *)
+                RC_FILE="your shell rc (~/.zshrc, ~/.bashrc)"
+                RC_LINE="export PATH=\"$BIN_DIR:\$PATH\""
+                ;;
+        esac
+        info "Add this to $RC_FILE:"
         info ""
-        info "  export PATH=\"$BIN_DIR:\$PATH\""
+        info "  $RC_LINE"
         info ""
-        info "Then: source ~/.zshrc  (or open a new terminal)"
+        info "Then: source $RC_FILE  (or open a new terminal)"
         ;;
 esac
 

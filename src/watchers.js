@@ -17,23 +17,44 @@ export function uninstallWatcher(group, slug) {
     if (IS_WIN)    return uninstallWindows(group, slug);
 }
 
+// Normalized state values across platforms:
+//   'running'       — process active
+//   'idle'          — registered/loaded but not currently running (e.g. exited cleanly)
+//   'failed'        — registered but in a failed/error state
+//   'not-installed' — no entry registered for this label
+//   'unsupported'   — platform without a watcher backend
 export function watcherStatus(group, slug) {
     const label = watcherLabel(group, slug);
     if (IS_DARWIN) {
         const r = run('launchctl', ['list']);
         const line = r.stdout.split('\n').find(l => l.endsWith(label));
-        if (!line) return { label, pid: '-', state: 'not loaded' };
+        if (!line) return { label, pid: '-', state: 'not-installed' };
         const [pid, code] = line.split(/\s+/);
-        if (pid === '-') return { label, pid: '-', state: `loaded (last exit ${code})` };
+        if (pid === '-') {
+            const exited = parseInt(code, 10);
+            return { label, pid: '-', state: exited && exited !== 0 ? 'failed' : 'idle' };
+        }
         return { label, pid, state: 'running' };
     }
     if (IS_LINUX) {
         const r = run('systemctl', ['--user', 'is-active', `${label}.service`]);
-        return { label, pid: '-', state: r.stdout || 'inactive' };
+        const raw = (r.stdout || '').trim();
+        if (raw === 'active')        return { label, pid: '-', state: 'running' };
+        if (raw === 'inactive')      return { label, pid: '-', state: 'not-installed' };
+        if (raw === 'failed')        return { label, pid: '-', state: 'failed' };
+        if (raw === 'activating')    return { label, pid: '-', state: 'running' };
+        if (raw === 'deactivating')  return { label, pid: '-', state: 'idle' };
+        return { label, pid: '-', state: raw || 'not-installed' };
     }
     if (IS_WIN) {
         const r = run('powershell', ['-NoProfile', '-Command', `(Get-ScheduledTask -TaskName '${label}' -ErrorAction SilentlyContinue).State`]);
-        return { label, pid: '-', state: r.stdout || 'not registered' };
+        const raw = (r.stdout || '').trim();
+        if (!raw)                    return { label, pid: '-', state: 'not-installed' };
+        if (raw === 'Running')       return { label, pid: '-', state: 'running' };
+        if (raw === 'Ready')         return { label, pid: '-', state: 'idle' };
+        if (raw === 'Disabled')      return { label, pid: '-', state: 'idle' };
+        if (raw === 'Queued')        return { label, pid: '-', state: 'idle' };
+        return { label, pid: '-', state: raw };
     }
     return { label, pid: '-', state: 'unsupported' };
 }
@@ -122,11 +143,14 @@ function uninstallLinux(group, slug) {
 function installWindows(group, repoPath, slug) {
     const label = watcherLabel(group, slug);
     const bin = graphifyBin();
+    // Run as the current user with limited privileges so the watcher only
+    // fires when the user is logged in and stays out of SYSTEM-level scope.
     const ps = `
 $action  = New-ScheduledTaskAction -Execute '${bin}' -Argument 'watch "${repoPath}"'
-$trigger = New-ScheduledTaskTrigger -AtLogOn
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName '${label}' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName '${label}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName '${label}' -ErrorAction SilentlyContinue
 `;
     run('powershell', ['-NoProfile', '-Command', ps]);

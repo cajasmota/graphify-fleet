@@ -577,13 +577,87 @@ Before writing each file:
 
 After writing, update `docs/.metadata.json` with the file's source SHAs. **Never write a vague placeholder if you ran out of budget — mark 🔴 INCOMPLETE with named unread items instead.**
 
+### Concrete SHA recipe (mandatory — do NOT skip and do NOT use placeholder strings)
+
+For each source file you cited, compute the SHA from inside the repo working dir:
+
+```bash
+# Preferred: git's blob hash matches what graphify-fleet's hooks use.
+git hash-object <source-file>
+
+# Fallback if file is untracked / outside the worktree:
+sha256sum <source-file> | awk '{print $1}'
+```
+
+Record the result in `docs/.metadata.json` under the doc-path key, like:
+
+```json
+{
+  "version": 1,
+  "files": {
+    "modules/orders/services.md": {
+      "generated_at": "2026-05-07T15:42:08Z",
+      "sources": [
+        { "path": "core/orders/services.py", "sha": "<output-of-git-hash-object>" },
+        { "path": "core/orders/state.py",    "sha": "<output-of-git-hash-object>" }
+      ]
+    }
+  },
+  "modules": {
+    "orders": { "fingerprint": "<sha256 of sorted(god_node_id + ':' + file_sha) joined by \\n>" }
+  }
+}
+```
+
+**Never write the literal placeholder `"<sha>"`. **If you cannot compute it, omit the entry — the post-commit hook's heuristic mapping will still work via the `path`.
+
 ---
 
-## Skip rules (re-runs)
+## Skip rules (re-runs) — these are PRECONDITIONS, evaluate first
+
+### First-run (no `docs/.metadata.json`)
+
+If `docs/.metadata.json` does not exist, treat all modules and sections as new — proceed to write everything. Create the file at the end of the pass with all sources + SHAs filled in.
+
+### Deleted-source reconciliation
+
+For every entry in `metadata.files[<doc>].sources[].path`, check `existsSync` on the file. If a source file no longer exists:
+
+1. **Do not regenerate** that doc this run.
+2. Mark the section 🔴 INCOMPLETE in the doc body with the deleted file as the reason: `🔴 source file deleted: <path>`.
+3. Add to `docs/.broken-sources.md` (created if missing): `- <doc-path> ← <deleted-source>`.
+
+The user reviews `.broken-sources.md` and decides whether to delete the doc or rebuild from new sources.
+
+### Module-scoped run (`--module <name>`)
+
+If invoked with `--module <name>`:
+
+1. Read existing `.plan.md` (if any).
+2. Restrict Passes 4/5/6 to sections whose doc path begins with `modules/<name>/`.
+3. Skip every other module's per-cluster work (treat as unchanged).
+4. Pass 8 (cross-link) still runs over the whole `docs/` tree — see Pass 8 prompt.
+
+### `--since <gitref>` mode
+
+If invoked with `--since <gitref>`:
+
+1. Run `git diff --name-only <gitref> HEAD` from the repo root.
+2. Treat the resulting paths as the "stale set" — same as `--refresh` semantics.
+3. Compute `targets = {f : metadata.files[f].sources[].path matches a changed file}`.
+4. Regenerate only `targets`. If empty, print `--since: no doc sections affected by changes since <gitref>` and exit cleanly.
+
+### `--refresh` mode
+
+`targets = read(.stale.md sections) ∪ {f : sha(f.sources) != metadata.files[f].sources[i].sha}`
+
+Where the SHA comparison uses the recipe above (`git hash-object`). If `.stale.md` is missing or empty AND no sources mismatch, print `--refresh: nothing to do` and exit cleanly.
+
+### Module-fingerprint skip (when none of the above modes are active)
 
 Before processing a module:
-1. Compute current fingerprint = SHA of (god_node_ids + their file SHAs).
-2. Compare to last fingerprint in `.metadata.json` for this module.
+1. Compute current fingerprint = SHA-256 of `sorted(god_node_id + ':' + file_sha) joined by \n`.
+2. Compare to `metadata.modules[<name>].fingerprint`.
 3. If unchanged: skip module entirely. Print `<module>: unchanged, skipped`.
 4. If `--force` flag: ignore fingerprint, regenerate.
 

@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,7 +102,38 @@ export function readJson(p, fallback = undefined) {
 }
 export function writeJson(p, obj) {
     ensureDir(dirname(p));
-    writeFileSync(p, JSON.stringify(obj, null, 2) + '\n');
+    // Atomic write: stage to a sibling tmp file then rename. Avoids a partial
+    // half-written file being read by a concurrent watcher / install.
+    const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+    const data = JSON.stringify(obj, null, 2) + '\n';
+    try {
+        writeFileSync(tmp, data);
+        renameSync(tmp, p);
+    } catch (e) {
+        try { unlinkSync(tmp); } catch {}
+        throw e;
+    }
+}
+
+// Levenshtein distance for fuzzy name-collision warnings (gfleet conventions).
+// Tiny implementation; only used for short identifiers.
+export function levenshtein(a, b) {
+    if (a === b) return 0;
+    if (!a) return b.length;
+    if (!b) return a.length;
+    const m = a.length, n = b.length;
+    let prev = new Array(n + 1);
+    let cur = new Array(n + 1);
+    for (let j = 0; j <= n; j++) prev[j] = j;
+    for (let i = 1; i <= m; i++) {
+        cur[0] = i;
+        for (let j = 1; j <= n; j++) {
+            const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+            cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+        }
+        [prev, cur] = [cur, prev];
+    }
+    return prev[n];
 }
 
 // ----- registry (group <-> config path) -----

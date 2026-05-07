@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, log, run, readJson, listRegistered, GROUPS_DIR, LOCAL_BIN, IS_WIN } from './util.js';
 import { installWatcher, uninstallWatcher, watcherStatus } from './watchers.js';
@@ -19,8 +19,19 @@ function helperPath(group) {
 function runHelper(group) {
     const p = helperPath(group);
     if (!existsSync(p)) { log.warn(`remerge helper not found: ${p}`); return; }
-    if (IS_WIN) run('powershell', ['-NoProfile', '-File', p]);
-    else run(p);
+    if (IS_WIN) { run('powershell', ['-NoProfile', '-File', p]); return; }
+    // POSIX: ensure executable; if exec still fails (ENOEXEC, e.g. file
+    // checked out without exec bit on a Windows-share), fall back to bash.
+    try {
+        const st = statSync(p);
+        // owner-execute bit
+        if ((st.mode & 0o100) === 0) chmodSync(p, st.mode | 0o755);
+    } catch {}
+    const r = run(p);
+    if (r.code === -1 || /ENOEXEC|exec format error|Permission denied/i.test(r.stderr ?? '')) {
+        log.warn(`remerge helper not directly executable; retrying via bash`);
+        run('bash', [p]);
+    }
 }
 
 export function list() {

@@ -21,6 +21,20 @@ Windows: replace step 1 with `irm https://raw.githubusercontent.com/cajasmota/gr
 
 ---
 
+## What you'll never type again
+
+After `gfleet wizard`, you should rarely touch gfleet again. Everything below happens automatically:
+
+- **Graphs stay current.** File watchers (launchd / systemd / Scheduled Tasks) rebuild on save; post-commit hooks rebuild on commit; the merge driver union-merges parallel `graph.json` commits.
+- **Docs staleness is tracked for you.** Post-commit / post-merge / post-checkout hooks update `docs/.stale.md` automatically. Your IDE agent reads it and surfaces stale sections when you ask about affected code or wrap up a task — you never have to remember.
+- **graphify patches re-apply themselves.** Every `gfleet update` (and any `ensureGraphify`) re-runs the `repo_filter` patch after `uv` reinstalls graphify, so MCP tooling stays consistent.
+- **Skill / agent-rule updates land via `gfleet update`.** That single command picks up new gfleet behavior across every registered group; rules blocks are marker-wrapped and idempotent.
+- **Onboarding is a single command for teammates.** They run `gfleet onboard` after `git clone`; the merge driver, watchers, MCP, and rules are all configured for them.
+
+Day-to-day, you mostly talk to your IDE agent. The agent surfaces what needs attention (stale docs, monorepo drift, missing setup) — gfleet itself stays out of the way.
+
+---
+
 ## Table of contents
 
 1. [Requirements](#requirements)
@@ -28,12 +42,12 @@ Windows: replace step 1 with `irm https://raw.githubusercontent.com/cajasmota/gr
 3. [Quick start (single dev)](#quick-start-single-dev)
 4. [Quick start (teammate joining)](#quick-start-teammate-joining)
 5. [Concepts](#concepts)
-6. [Commands reference](#commands-reference)
-7. [Config schema](#config-schema)
-8. [The `.gfleet/group.json` manifest](#the-gfleetgroupjson-manifest)
-9. [Multi-dev workflow](#multi-dev-workflow)
-10. [Generated docs](#generated-docs)
-11. [Troubleshooting](#troubleshooting)
+6. [Config schema](#config-schema)
+7. [The `.gfleet/group.json` manifest](#the-gfleetgroupjson-manifest)
+8. [Multi-dev workflow](#multi-dev-workflow)
+9. [Generated docs](#generated-docs)
+10. [Troubleshooting](#troubleshooting)
+11. [Commands reference (appendix)](#commands-reference-appendix)
 
 ---
 
@@ -153,84 +167,6 @@ Adds `/generate-docs` to Claude Code and Windsurf — module-organized markdown,
 
 ---
 
-## Commands reference
-
-Bare invocation (`gfleet`) lists registered groups (or shows help if none).
-
-### Setup
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet wizard` | Interactive first-time setup. Picks group, repos, features. Writes config + runs install. |
-| `gfleet onboard [path]` | Bootstrap a teammate after `git clone`. Reads `.gfleet/group.json`, prompts for sibling paths, runs install. |
-| `gfleet doctor` | Verify prerequisites (Node, uv, Python, graphify version, patch state, extras). |
-| `gfleet install <config.json>` | Install (or re-apply) for a single fleet config. Idempotent. |
-| `gfleet uninstall [group\|config] [--purge]` | Remove watchers, hooks, MCP entries, agent rules, manifest. `--purge` also deletes per-repo `graphify-out/`. |
-
-### Inspect
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet list` (or `gfleet ls`) | List all registered groups + node counts. |
-| `gfleet status [group]` | Watcher state + graph stats. |
-| `gfleet help` | This message. |
-
-### Build / rebuild graphs
-
-Accept a group name (preferred) or a config path; no arg runs across all registered groups.
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet rebuild [group] [slug]` | Force AST rebuild (use after deletions). One repo if `slug` given. |
-| `gfleet reset [group] [slug]` | Wipe `graphify-out/` and rebuild from scratch. |
-| `gfleet remerge [group]` | Re-run merge-graphs over per-repo graphs (no rebuild). |
-
-### Watchers
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet start [group]` | Load watchers (launchd / systemd-user / Scheduled Tasks). |
-| `gfleet stop [group]` | Unload watchers. |
-| `gfleet restart [group]` | Stop + start. |
-
-### Skills (generate-docs)
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet skills install` | Deploy skill to `~/.claude/skills/`, `~/.codeium/windsurf/skills/`, plus per-repo Windsurf workflows. Auto-applies the graphify patch. |
-| `gfleet skills uninstall` | Remove skill + per-repo workflows. |
-| `gfleet skills update` | Re-copy from local graphify-fleet repo (after `git pull`). |
-| `gfleet skills status` | Show what's installed where. |
-
-### Docs
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet docs status [group]` | List doc state per repo (up-to-date, stale, not-yet-generated). |
-| `gfleet docs run <group>` | Print instructions to invoke `/generate-docs` in your IDE. |
-| `gfleet docs path <group>` | Print the group docs path. |
-| `gfleet docs init-cli <group>` | Headless CLI Q&A. **Prefer** `/generate-docs --setup-only` in your IDE — it seeds answers from the codebase. |
-
-### Monorepo
-
-Interactive-first; text args are CI-friendly fallback. Auto-detects via `pnpm-workspace.yaml`, `package.json` workspaces, `nx.json`, `turbo.json`, `lerna.json`, or multi-package fallback.
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet monorepo add [group] [path]` | Pick group → pick monorepo → multi-select modules. `--modules pkg/a,pkg/b` for non-interactive. |
-| `gfleet monorepo remove [group] [path]` | Deselect modules. |
-| `gfleet monorepo list` | Show indexed monorepo modules across all groups. |
-
-### Patch (graphify local patch)
-
-| Command | What it does |
-|---------|--------------|
-| `gfleet patch graphify` | Apply the `repo_filter` patch to graphify's `serve.py` (idempotent). Auto-runs on `gfleet skills install`. |
-| `gfleet patch status` | Show patch state (applied / partial / unpatched). |
-| `gfleet patch revert` | Restore graphify from `serve.py.gfleet-orig` backup. |
-
----
-
 ## Config schema
 
 A fleet config is a JSON file, one per group. See `examples/myapp.fleet.json` and `examples/monorepo.fleet.json`.
@@ -271,7 +207,11 @@ A fleet config is a JSON file, one per group. See `examples/myapp.fleet.json` an
 }
 ```
 
-**Stack values**: `react-native`, `node`, `python`, `python-generic`, `django`, `go`, `infra-terraform`, `infra-cdk`, `generic`. Drives `.graphifyignore` template choice and per-stack documentation conventions.
+**Stack values** (free-form — drives `.graphifyignore` template choice and per-stack documentation conventions):
+
+- `.graphifyignore` templates ship for: `react-native`, `node`, `python`, `go`, `generic`. Any other value falls back to the `generic` ignore template.
+- Documentation conventions ship for: `react-native`, `node`, `python`, `python-generic`, `django`, `go`, `infra-terraform`, `infra-cdk`, `generic`. Add more with `gfleet conventions add`.
+- A stack value may be anything (e.g. `elixir`, `dotnet`); the ignore template will fall back to `generic` and the docs skill will use whichever convention matches by name.
 
 **Repo entry types**: default (no `type`) is a standalone repo; `type: "monorepo"` requires a `modules` array.
 
@@ -399,3 +339,98 @@ npm run docs:dev    # http://localhost:5173
 - New monorepo detector: add a function to `src/monorepo.js` `DETECTORS`.
 - New MCP server: extend `writeMcpJson` in `src/integrations.js`.
 - New CLI command: wire it in `src/cli.js`.
+
+---
+
+## Commands reference (appendix)
+
+Bare invocation (`gfleet`) lists registered groups (or shows help if none).
+
+`gfleet help` shows just the install-and-forget surface (5–6 commands you actually run). `gfleet help advanced` shows everything below.
+
+### Day-to-day (the 5 you'll actually use)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet wizard` | Interactive first-time setup. Picks group, repos, features. Writes config + runs install. |
+| `gfleet onboard [path]` | Bootstrap a teammate after `git clone`. Reads `.gfleet/group.json`, prompts for sibling paths, runs install. |
+| `gfleet update [--refresh-rules]` | Pull latest gfleet, redeploy skills, repatch graphify. Run when `gfleet doctor` says something drifted. |
+| `gfleet doctor` | Verify prerequisites (Node, uv, Python, graphify version, patch state, extras). |
+| `gfleet status [group]` | Watcher + graph status across all (or one) registered group. |
+
+### Setup (advanced)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet install <config.json>` | Install (or re-apply) for a single fleet config. Normally invoked by wizard / onboard. |
+| `gfleet uninstall [group\|config] [--purge]` | Remove watchers, hooks, MCP entries, agent rules, manifest. `--purge` also deletes per-repo `graphify-out/`. |
+
+### Inspect
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet list` (or `gfleet ls`) | List all registered groups + node counts. |
+| `gfleet help [advanced]` | Help (default = primary; `advanced` = full). |
+
+### Repair / rebuild graphs
+
+Accept a group name (preferred) or a config path; no arg runs across all registered groups.
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet rebuild [group] [slug]` | Force AST rebuild (use after deletions). One repo if `slug` given. |
+| `gfleet reset [group] [slug]` | Wipe `graphify-out/` and rebuild from scratch. |
+| `gfleet remerge [group]` | Re-run merge-graphs over per-repo graphs (no rebuild). |
+
+### Watchers (self-healing — rarely needed)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet start [group]` | Load watchers (launchd / systemd-user / Scheduled Tasks). |
+| `gfleet stop [group]` | Unload watchers. |
+| `gfleet restart [group]` | Stop + start. |
+
+### Skills (auto via wizard / update)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet skills install` | Deploy skill to `~/.claude/skills/`, `~/.codeium/windsurf/skills/`, plus per-repo Windsurf workflows. Auto-applies the graphify patch. |
+| `gfleet skills uninstall` | Remove skill + per-repo workflows. |
+| `gfleet skills update` | Re-copy from local graphify-fleet repo (after `git pull`). |
+| `gfleet skills status` | Show what's installed where. |
+
+### Docs (agent-driven; surface in your IDE)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet docs status [group]` | List doc state per repo (up-to-date, stale, not-yet-generated). |
+| `gfleet docs run <group>` | Print instructions to invoke `/generate-docs` in your IDE. |
+| `gfleet docs path <group>` | Print the group docs path. |
+| `gfleet docs init-cli <group>` | Headless CLI Q&A. **Prefer** `/generate-docs --setup-only` in your IDE — it seeds answers from the codebase. |
+| `gfleet docs mark-stale --stdin --group <g> --hook <h>` | Internal hook entry point — invoked by post-commit / post-merge / post-checkout to maintain `docs/.stale.md`. Not for direct human use. |
+
+### Monorepo (agent surfaces this when modules drift)
+
+Interactive-first; text args are CI-friendly fallback. Auto-detects via `pnpm-workspace.yaml`, `package.json` workspaces, `nx.json`, `turbo.json`, `lerna.json`, or multi-package fallback.
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet monorepo add [group] [path]` | Pick group → pick monorepo → multi-select modules. `--modules pkg/a,pkg/b` for non-interactive. |
+| `gfleet monorepo remove [group] [path]` | Deselect modules. |
+| `gfleet monorepo list` | Show indexed monorepo modules across all groups. |
+
+### Conventions (extend the generate-docs skill)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet conventions list` | Show built-in + user-added stack conventions. |
+| `gfleet conventions add [--name X]` | Stub a new stack convention; fill via `/extend-convention` in your IDE. |
+| `gfleet conventions remove` | Remove a user-added convention. |
+
+### Graphify patch (auto on every `ensureGraphify` / `skills install`)
+
+| Command | What it does |
+|---------|--------------|
+| `gfleet patch graphify` | Apply the `repo_filter` patch to graphify's `serve.py` (idempotent). |
+| `gfleet patch status` | Show patch state (applied / partial / unpatched). |
+| `gfleet patch revert` | Restore graphify from `serve.py.gfleet-orig` backup. |

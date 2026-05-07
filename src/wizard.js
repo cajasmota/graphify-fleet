@@ -98,7 +98,10 @@ async function chooseRepos_Discover() {
 }
 
 async function chooseRepos_Manual() {
-    note('Type one or more repo paths. Comma-separated for multiple. Empty input to finish.\nDrag a folder from Finder to paste its path.', 'manual mode');
+    // NOTE: paths containing literal commas or quoted segments are not
+    // supported by this simple comma-split. If you have such a path, add it
+    // by editing the saved config JSON directly after the wizard completes.
+    note('Type one or more repo paths. Comma-separated for multiple. Empty input to finish.\nDrag a folder from Finder to paste its path. (Paths containing commas: edit config JSON after.)', 'manual mode');
     const repos = [];
     while (true) {
         const raw = await ask(() => text({
@@ -214,9 +217,16 @@ export async function wizard() {
         groupDocsPath = inputPath ? expandPath(cleanPath(inputPath)) : null;
     }
 
+    // Default to the XDG-friendly location under ~/.config when ~/configs
+    // doesn't already exist (legacy users get to keep their old layout).
+    const legacyConfigsDir = join(HOME, 'configs');
+    const xdgDir = process.env.XDG_CONFIG_HOME
+        ? join(process.env.XDG_CONFIG_HOME, 'gfleet')
+        : join(HOME, '.config', 'gfleet');
+    const defaultConfigDir = existsSync(legacyConfigsDir) ? legacyConfigsDir : xdgDir;
     const configPath = await ask(() => text({
         message: 'Save config to',
-        initialValue: join(HOME, 'configs', `${group}.fleet.json`),
+        initialValue: join(defaultConfigDir, `${group}.fleet.json`),
     }));
 
     const cfg = {

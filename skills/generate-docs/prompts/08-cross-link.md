@@ -28,6 +28,10 @@ Walk every `.md` file under:
 - `<repo>/docs/`
 - `<group_docs_path>/`
 
+**Skipped-module rule (important for `--refresh` / `--module` / `--since` runs).** When most modules were skipped this run (their fingerprints didn't change), their existing `.md` files on disk are still valid cross-link targets AND their outbound links must still be verified against any newly-renamed targets in this run's regenerated docs. Therefore Pass 8's input is the **entire `docs/` tree on disk**, regardless of which subset Passes 4–6 touched. Do not restrict to "files written this run" — that would produce a false-clean broken-links report.
+
+When verifying anchors against a skipped module's file, read the on-disk content (do not re-derive from any in-memory regeneration result).
+
 Extract every markdown link `[text](path#anchor)`. Skip:
 - External links (`http://`, `https://`)
 - Code references (lines starting with `path/to/file.py:N` — not links)

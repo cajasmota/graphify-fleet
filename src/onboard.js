@@ -114,8 +114,7 @@ export async function onboard(startPath = '.') {
         const existing = groups[manifest.group].config;
         const existingCfg = existsSync(existing) ? readJson(existing) : null;
         const alreadyHas = existingCfg?.repos?.some(r => {
-            const rp = expandPath(r.path);
-            return rp === found.repo;
+            return resolve(expandPath(r.path)) === found.repo;
         });
         if (alreadyHas) {
             note(`Group "${manifest.group}" is already registered with this repo at:\n  ${existing}\n\nRunning install to refresh local state (merge driver, watchers, MCP, agent rules).`, 'already onboarded');
@@ -149,8 +148,14 @@ export async function onboard(startPath = '.') {
             { path: found.repo, slug: manifest.this.slug, stack: manifest.this.stack },
             ...resolvedSiblings.map(s => ({ path: s.path, slug: s.slug, stack: s.stack })),
         ],
-        options: manifest.options ?? {
-            wiki_gitignored: true, watchers: true, windsurf: true, claude_code: true,
+        // Spread manifest.options so any new/unknown future fields propagate
+        // through to the local config (instead of being dropped silently).
+        options: {
+            wiki_gitignored: true,
+            watchers: true,
+            windsurf: true,
+            claude_code: true,
+            ...(manifest.options ?? {}),
         },
     };
 

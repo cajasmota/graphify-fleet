@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync, copyFileSync, statSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { intro, outro, text, select, confirm, isCancel, cancel, note } from '@clack/prompts';
-import { ROOT_DIR, HOME, ensureDir, log, die } from './util.js';
+import { ROOT_DIR, HOME, ensureDir, log, die, levenshtein } from './util.js';
 
 // User-level conventions live alongside the user-installed skill so the
 // agent can find them at runtime. We mirror to BOTH locations so Claude
@@ -63,13 +63,25 @@ export async function conventionsAdd({ name, base } = {}) {
         },
     }));
 
+    // Warn (don't block) on near-duplicate names — common typo trap (e.g.
+    // "djano" vs built-in "django").
+    {
+        const trimmed = stackName.trim();
+        const all = listConventions(SKILL_SRC).concat(listConventions(CLAUDE_CONV));
+        const close = all.filter(c => c !== trimmed && levenshtein(c, trimmed) <= 1);
+        if (close.length > 0) {
+            log.warn(`Name "${trimmed}" is one edit away from existing convention(s): ${close.join(', ')}`);
+            log.info('  (continuing — this is just a heads-up; cancel with Ctrl-C if it was a typo)');
+        }
+    }
+
     const builtin = listConventions(SKILL_SRC);
     const baseConvention = base ?? await ask(() => select({
         message: 'Pick a similar existing convention to base on',
         options: builtin.map(b => ({ value: b, label: b })),
     }));
 
-    const skipAi = await ask(() => confirm({
+    const useAi = await ask(() => confirm({
         message: 'Use AI-assisted draft? (recommended — opens a draft + instructs you to run /extend-convention in your IDE)',
         initialValue: true,
     }));
@@ -79,7 +91,7 @@ export async function conventionsAdd({ name, base } = {}) {
     ensureDir(CLAUDE_CONV);
     ensureDir(WINDSURF_CONV);
 
-    if (skipAi) {
+    if (useAi) {
         // Write a stub primed for /extend-convention to fill in
         const stub = renderExtendStub(stackName, baseConvention);
         writeFileSync(dst, stub);
