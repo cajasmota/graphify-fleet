@@ -77,7 +77,7 @@ test('writeMcpJson: fresh creates file with group server only (no per-repo)', ()
             assert.equal(obj.mcpServers['graphify-my-repo'], undefined);
             // Args now point at the gfleet-owned server script + graphs-dir.
             const args = obj.mcpServers['graphify-my-group'].args;
-            assert.ok(args.some(a => a.endsWith('server.py')), 'expected server.py in args');
+            assert.ok(args.some(a => a.endsWith('__main__.py')), 'expected mcp_server/__main__.py in args');
             assert.ok(args.includes('--group'));
             assert.ok(args.includes('my-group'));
         } finally { rmSync(repo, { recursive: true, force: true }); }

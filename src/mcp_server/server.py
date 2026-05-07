@@ -1,0 +1,232 @@
+# gfleet-managed MCP stdio server. Forked from upstream graphify `serve.py`
+# and modularized into the `mcp_server` package — see `__init__.py` for the
+# package layout.
+#
+# CLI:  python -m mcp_server <graphs-dir> [--group <tag>]
+# or:   python <gfleet>/src/mcp_server/__main__.py <graphs-dir> [--group <tag>]
+#
+# Tools (same surface as upstream graphify, plus repo_filter on every tool
+# that traverses, plus the gfleet-native `save_result`):
+#   query_graph(question, mode, depth, token_budget, context_filter, repo_filter)
+#   get_node(label, repo_filter)
+#   get_neighbors(label, relation_filter, repo_filter)
+#   get_community(community_id, repo_filter)
+#   list_communities(repo_filter)
+#   god_nodes(top_n, repo_filter)
+#   graph_stats(repo_filter)
+#   shortest_path(source, target, max_hops, repo_filter)
+#   save_result(question, answer, type, nodes, repo_filter)
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+from . import tools as _tools
+from .state import GraphState
+from .utils import _filter_blank_stdin
+
+
+def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path]) -> None:
+    try:
+        from mcp.server import Server
+        from mcp.server.stdio import stdio_server
+        from mcp import types
+    except ImportError as e:
+        raise ImportError("mcp not installed. Run: pip install mcp") from e
+
+    state = GraphState(graphs_dir, links_path)
+    state.initial_load()
+    print(
+        f"loaded {len(state.graphs)} repo graphs from {graphs_dir}"
+        + (f" (group={group})" if group else "")
+        + (f" links={len(state.xrepo_edges.edges())}" if state.xrepo_edges else "")
+        + (f" unavailable={sorted(state.unavailable.keys())}" if state.unavailable else ""),
+        file=sys.stderr,
+    )
+
+    server_name = f"gfleet-{group}" if group else "gfleet"
+    server = Server(server_name)
+
+    @server.list_tools()
+    async def list_tools() -> list:  # type: ignore[override]
+        return [
+            types.Tool(
+                name="query_graph",
+                description="Search the knowledge graph using BFS or DFS. With repo_filter, scopes to one repo's local graph; without, walks the cross-repo composite (per-repo graphs joined by link-table edges).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "Natural language question or keyword search"},
+                        "mode": {"type": "string", "enum": ["bfs", "dfs"], "default": "bfs"},
+                        "depth": {"type": "integer", "default": 3},
+                        "token_budget": {"type": "integer", "default": 2000},
+                        "context_filter": {"type": "array", "items": {"type": "string"}},
+                        "repo_filter": {"type": "string", "description": "Restrict to a single repo's graph (matches the graph file stem in graphs-dir)."},
+                    },
+                    "required": ["question"],
+                },
+            ),
+            types.Tool(
+                name="get_node",
+                description="Get full details for a node by label or ID. Searches across all repos unless repo_filter is set.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "repo_filter": {"type": "string"},
+                    },
+                    "required": ["label"],
+                },
+            ),
+            types.Tool(
+                name="get_neighbors",
+                description="Direct neighbors of a node, including cross-repo neighbors via the link table.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "relation_filter": {"type": "string"},
+                        "repo_filter": {"type": "string"},
+                    },
+                    "required": ["label"],
+                },
+            ),
+            types.Tool(
+                name="get_community",
+                description="Get all nodes in a community by community ID. Requires repo_filter (community IDs are per-repo).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "community_id": {"type": "integer"},
+                        "repo_filter": {"type": "string"},
+                    },
+                    "required": ["community_id"],
+                },
+            ),
+            types.Tool(
+                name="list_communities",
+                description="List community IDs and node counts. With repo_filter, scopes to one repo.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"repo_filter": {"type": "string"}},
+                },
+            ),
+            types.Tool(
+                name="god_nodes",
+                description="Most-connected nodes (per repo if repo_filter, else across the composite).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "top_n": {"type": "integer", "default": 10},
+                        "repo_filter": {"type": "string"},
+                    },
+                },
+            ),
+            types.Tool(
+                name="graph_stats",
+                description="Summary stats: nodes, edges, communities. Aggregated across all repos unless repo_filter is set.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"repo_filter": {"type": "string"}},
+                },
+            ),
+            types.Tool(
+                name="shortest_path",
+                description="Shortest path between two concepts. Without repo_filter, the composite (per-repo + cross-repo links) is searched.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "max_hops": {"type": "integer", "default": 8},
+                        "repo_filter": {"type": "string"},
+                    },
+                    "required": ["source", "target"],
+                },
+            ),
+            types.Tool(
+                name="save_result",
+                description="Persist a question/answer pair (and the supporting node IDs) so the agent can refer back to it later. Writes to ~/.graphify/groups/<group>-memory/<timestamp>-<sha8>.json. Returns the absolute path.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "answer": {"type": "string"},
+                        "type": {"type": "string", "enum": ["query", "path_query", "explain"], "default": "query"},
+                        "nodes": {"type": "array", "items": {"type": "string"}, "default": []},
+                        "repo_filter": {"type": "string"},
+                    },
+                    "required": ["question", "answer"],
+                },
+            ),
+        ]
+
+    _handlers = {
+        "query_graph": lambda args: _tools.query_graph(state, args),
+        "get_node": lambda args: _tools.get_node(state, args),
+        "get_neighbors": lambda args: _tools.get_neighbors(state, args),
+        "get_community": lambda args: _tools.get_community(state, args),
+        "list_communities": lambda args: _tools.list_communities(state, args),
+        "god_nodes": lambda args: _tools.god_nodes(state, args),
+        "graph_stats": lambda args: _tools.graph_stats(state, args),
+        "shortest_path": lambda args: _tools.shortest_path(state, args),
+        "save_result": lambda args: _tools.save_result(state, args, group=group),
+    }
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict):  # type: ignore[override]
+        handler = _handlers.get(name)
+        if not handler:
+            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+        try:
+            return [types.TextContent(type="text", text=handler(arguments))]
+        except Exception as exc:  # noqa: BLE001 — tool errors must not kill the server
+            return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+
+    _filter_blank_stdin()
+
+    import asyncio
+
+    async def main() -> None:
+        async with stdio_server() as streams:
+            await server.run(streams[0], streams[1], server.create_initialization_options())
+
+    asyncio.run(main())
+
+
+def _resolve_links_path(graphs_dir: Path, group: Optional[str]) -> Optional[Path]:
+    """Mirror gfleet's convention: `~/.graphify/groups/<group>-links.json`."""
+    if not group:
+        return None
+    home = Path(os.path.expanduser("~"))
+    return home / ".graphify" / "groups" / f"{group}-links.json"
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="mcp_server", description="gfleet MCP stdio server (per-repo graphs + cross-repo link overlay)")
+    p.add_argument("graphs_dir", help="Directory containing per-repo <slug>.json graph files (typically symlinks)")
+    p.add_argument("--group", default=None, help="Group tag (used to resolve <group>-links.json)")
+    return p.parse_args(argv)
+
+
+def main_cli(argv: Optional[list[str]] = None) -> None:
+    ns = _parse_args(argv if argv is not None else sys.argv[1:])
+    graphs_dir = Path(ns.graphs_dir).resolve()
+    if not graphs_dir.exists() or not graphs_dir.is_dir():
+        print(f"error: graphs_dir not found or not a directory: {graphs_dir}", file=sys.stderr)
+        sys.exit(1)
+    group = ns.group
+    if group is None:
+        # Best-effort fallback: <graphs-dir>/.. /<group>/graphs
+        parent = graphs_dir.parent
+        if parent.name and parent.parent.name == "groups":
+            group = parent.name
+    links_path = _resolve_links_path(graphs_dir, group)
+    serve(graphs_dir, group, links_path)
+
+
+if __name__ == "__main__":
+    main_cli()

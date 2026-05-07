@@ -1,7 +1,8 @@
 // Per-repo integrations: ignores, .mcp.json, Claude/Windsurf, git hooks.
 //
 // Architecture note (post-fork): the MCP server is gfleet-owned and lives at
-// `<gfleet>/src/mcp-server/server.py`. It loads per-repo graph files from a
+// `<gfleet>/src/mcp_server/` (Python package, underscore — required so the
+// directory is importable as a module). It loads per-repo graph files from a
 // graphs-dir (one symlink per slug) and, optionally, applies cross-repo edges
 // from `~/.graphify/groups/<group>-links.json` on top. There is no merged
 // graph file and no merge daemon — the upstream `graphify merge-graphs`
@@ -70,9 +71,16 @@ graphify-out/cache/
     log.info('.gitignore updated (docs/ + graphify-out scratch)');
 }
 
-// Path of the gfleet-owned MCP server script (forked from upstream `serve.py`).
+// Path of the gfleet-owned MCP server entry point (forked from upstream
+// `serve.py` and modularized into `src/mcp_server/`). We point at the
+// package's `__main__.py` directly rather than rely on `python -m
+// mcp_server`, because the latter requires the gfleet `src/` directory to be
+// on PYTHONPATH at the user's MCP-host invocation site, which is fragile
+// across IDEs (Claude Code, Windsurf, Cursor). The direct file path works
+// regardless of the host's CWD, and `__main__.py` self-bootstraps sys.path
+// so relative package imports resolve.
 export function mcpServerPath() {
-    return join(ROOT_DIR, 'src', 'mcp-server', 'server.py');
+    return join(ROOT_DIR, 'src', 'mcp_server', '__main__.py');
 }
 
 // Directory of per-repo graph files for a group. The MCP server takes this
@@ -693,6 +701,19 @@ export function migrateLegacyArtifacts(group) {
             try { unlinkSync(merged); removed.push(merged); } catch {}
         }
     }
+
+    // 7a. Old `src/mcp-server/` directory (hyphen — pre-modularization).
+    // The package was renamed to `src/mcp_server/` (underscore) so it can be
+    // imported as a Python module. Drop the legacy directory if it exists
+    // and isn't already pointing at the new location. We never delete files
+    // outside ROOT_DIR.
+    try {
+        const legacyDir = join(ROOT_DIR, 'src', 'mcp-server');
+        if (existsSync(legacyDir)) {
+            rmSync(legacyDir, { recursive: true, force: true });
+            removed.push(legacyDir);
+        }
+    } catch {}
 
     // 7. Old patched serve.py backup (.gfleet-orig) sitting next to the
     // graphify install. Best-effort; don't error if we can't locate python.

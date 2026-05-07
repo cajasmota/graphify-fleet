@@ -1,5 +1,9 @@
-// Tests for the gfleet-owned MCP server fork at `src/mcp-server/server.py`
-// and the graphs-dir symlink layout produced by `ensureGroupGraphsDir`.
+// Tests for the gfleet-owned MCP server package at `src/mcp_server/` and the
+// graphs-dir symlink layout produced by `ensureGroupGraphsDir`.
+//
+// The Python `mcp` and `networkx` libraries are needed for full smoke checks;
+// tests gracefully skip when they aren't importable so CI without the
+// graphify env doesn't fail.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readlinkSync, lstatSync, existsSync } from 'node:fs';
@@ -12,7 +16,23 @@ import { ensureGroupGraphsDir, mcpServerPath, groupGraphsDir } from '../src/inte
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const SERVER_PY = join(__dirname, '..', 'src', 'mcp-server', 'server.py');
+const PKG_DIR = join(__dirname, '..', 'src', 'mcp_server');
+const ENTRY_PY = join(PKG_DIR, '__main__.py');
+
+const EXPECTED_MODULES = [
+    '__init__.py',
+    '__main__.py',
+    'server.py',
+    'state.py',
+    'tools.py',
+    'scoring.py',
+    'traversal.py',
+    'context_filter.py',
+    'index.py',
+    'links_loader.py',
+    'communities.py',
+    'utils.py',
+];
 
 const PY = (() => {
     for (const cand of ['python3', 'python']) {
@@ -22,33 +42,267 @@ const PY = (() => {
     return null;
 })();
 
+// Resolve a python that has networkx + mcp available (graphify's venv if
+// available; otherwise PY if it happens to). Returns null if none found.
+const PY_WITH_DEPS = (() => {
+    const candidates = [];
+    if (PY) candidates.push(PY);
+    // graphify's `uv tools install graphifyy` venv (well-known location).
+    const home = process.env.HOME ?? '';
+    if (home) candidates.push(join(home, '.local', 'share', 'uv', 'tools', 'graphifyy', 'bin', 'python3'));
+    for (const cand of candidates) {
+        const r = spawnSync(cand, ['-c', 'import networkx, mcp']);
+        if (r.status === 0) return cand;
+    }
+    return null;
+})();
+
 function mkTmp() { return mkdtempSync(join(tmpdir(), 'gfleet-mcp-')); }
 
-test('server.py: parses cleanly under python -c ast.parse', { skip: PY ? false : 'python not on PATH' }, () => {
-    const r = spawnSync(PY, ['-c', `import ast; ast.parse(open(${JSON.stringify(SERVER_PY)}).read())`]);
-    assert.equal(r.status, 0, `ast.parse failed: ${r.stderr.toString()}`);
+// ---------------------------------------------------------------------------
+// Module structure (Phase 4a.1)
+// ---------------------------------------------------------------------------
+
+test('mcp_server: every expected module exists and parses via ast.parse', { skip: PY ? false : 'python not on PATH' }, () => {
+    for (const mod of EXPECTED_MODULES) {
+        const p = join(PKG_DIR, mod);
+        assert.ok(existsSync(p), `expected ${p} to exist`);
+        const r = spawnSync(PY, ['-c', `import ast; ast.parse(open(${JSON.stringify(p)}).read())`]);
+        assert.equal(r.status, 0, `ast.parse failed for ${mod}: ${r.stderr.toString()}`);
+    }
 });
 
-test('server.py: --help surfaces graphs_dir + --group args (no mcp dep needed for argparse)', { skip: PY ? false : 'python not on PATH' }, () => {
-    // argparse runs before the mcp import path; --help should exit 0 even if
-    // networkx / mcp aren't available. If networkx is missing the import at
-    // top of the file fails, in which case skip — that's not what we're
-    // verifying here.
-    const probe = spawnSync(PY, ['-c', 'import networkx'], { encoding: 'utf8' });
-    if (probe.status !== 0) {
-        return; // can't validate without networkx; skip silently in CI without graphify env
-    }
-    const r = spawnSync(PY, [SERVER_PY, '--help'], { encoding: 'utf8', timeout: 10000 });
+test('mcpServerPath: resolves to src/mcp_server/__main__.py and exists', () => {
+    const p = mcpServerPath();
+    assert.equal(p, ENTRY_PY);
+    assert.ok(existsSync(p), `expected ${p} to exist`);
+});
+
+test('mcp_server: --help surfaces graphs_dir + --group args', { skip: PY_WITH_DEPS ? false : 'python with networkx+mcp not available' }, () => {
+    const r = spawnSync(PY_WITH_DEPS, [ENTRY_PY, '--help'], { encoding: 'utf8', timeout: 10000 });
     assert.equal(r.status, 0, `--help exit ${r.status}: ${r.stderr}`);
     assert.match(r.stdout, /graphs_dir/);
     assert.match(r.stdout, /--group/);
 });
 
-test('mcpServerPath: resolves to an existing file under src/mcp-server/', () => {
-    const p = mcpServerPath();
-    assert.equal(p, SERVER_PY);
-    assert.ok(existsSync(p), `expected ${p} to exist`);
+// ---------------------------------------------------------------------------
+// Tier A item 2 — LabelIndex correctness
+// ---------------------------------------------------------------------------
+
+test('LabelIndex: lookup hits exact and substring, reload drops old entries', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import json, sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.index import LabelIndex
+
+G = nx.Graph()
+G.add_node('n1', label='Foo Bar', norm_label='foo bar')
+G.add_node('n2', label='Baz', norm_label='baz')
+idx = LabelIndex()
+idx.add_repo('repoA', G)
+
+assert len(idx.lookup('Foo Bar')) == 1
+assert idx.lookup('Foo Bar')[0][:2] == ('repoA', 'n1')
+assert len(idx.lookup_substring('foo')) == 1
+assert idx.lookup('missing') == []
+
+# Reload with a new graph: old entries gone, new entries present.
+G2 = nx.Graph()
+G2.add_node('n3', label='Qux', norm_label='qux')
+idx.reload_repo('repoA', G2)
+assert idx.lookup('Foo Bar') == []
+assert len(idx.lookup('Qux')) == 1
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `LabelIndex script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
 });
+
+// ---------------------------------------------------------------------------
+// Tier A item 3 — community cache hit
+// ---------------------------------------------------------------------------
+
+test('communities cache: identical (repo, mtime) returns the cached object', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys, networkx as nx
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.communities import communities_for, cache_size
+
+G = nx.Graph()
+G.add_node('a', community=1)
+G.add_node('b', community=1)
+G.add_node('c', community=2)
+first = communities_for('repoA', 100.0, G)
+second = communities_for('repoA', 100.0, G)
+assert first is second, 'cache miss on second call'
+assert sorted(first.keys()) == [1, 2]
+# Bump mtime: cache size for repoA stays at 1 (eviction).
+_ = communities_for('repoA', 200.0, G)
+sizes = [k for k in [('repoA', 100.0), ('repoA', 200.0)]]
+print('OK', cache_size())
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `communities cache script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+// ---------------------------------------------------------------------------
+// Tier A item 4 — schema validation tolerance
+// ---------------------------------------------------------------------------
+
+test('links_loader: malformed entries skipped, valid entries served', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const linksFile = join(tmp, 'links.json');
+        const data = {
+            version: 1,
+            links: [
+                // valid
+                { source: 'a::n1', target: 'b::n2', relation: 'calls', method: 'import', confidence: 1.0, discovered_at: '2026-05-08T00:00:00Z' },
+                // missing relation
+                { source: 'a::n1', target: 'b::n2', method: 'import', confidence: 1.0, discovered_at: '2026-05-08T00:00:00Z' },
+                // not an object
+                'not-an-object',
+                // valid with optionals
+                { source: 'a::n1', target: 'c::n3', relation: 'imports', method: 'manual', confidence: 0.5, discovered_at: '2026-05-08T00:00:00Z', channel: 'queueX' },
+            ],
+        };
+        writeFileSync(linksFile, JSON.stringify(data));
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.links_loader import load_links_file
+v, entries = load_links_file(Path(${JSON.stringify(linksFile)}))
+assert v == 1
+assert len(entries) == 2, f"expected 2 valid entries, got {len(entries)}"
+assert entries[0]['relation'] == 'calls'
+assert entries[1]['channel'] == 'queueX'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `schema validation script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+
+        // Malformed JSON entirely — server should not crash; loader returns [].
+        writeFileSync(linksFile, '{ this is not json');
+        const script2 = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.links_loader import load_links_file
+v, entries = load_links_file(Path(${JSON.stringify(linksFile)}))
+assert entries == []
+print('OK')
+`;
+        const r2 = spawnSync(PY_WITH_DEPS, ['-c', script2], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r2.status, 0, `unparseable JSON script failed: ${r2.stderr}`);
+        assert.match(r2.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Tier A item 5 — graceful per-repo failure
+// ---------------------------------------------------------------------------
+
+test('GraphState: corrupt graph file marks repo unavailable; valid repos still queryable', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        // Valid graphify-style graph (node-link).
+        const validGraph = {
+            directed: false,
+            multigraph: false,
+            graph: {},
+            nodes: [{ id: 'n1', label: 'Hello' }, { id: 'n2', label: 'World' }],
+            links: [{ source: 'n1', target: 'n2', relation: 'calls' }],
+        };
+        writeFileSync(join(graphsDir, 'good.json'), JSON.stringify(validGraph));
+        writeFileSync(join(graphsDir, 'bad.json'), '{ corrupt');
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph, get_node, graph_stats
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+assert 'good' in state.graphs, f"good not loaded: {state.graphs.keys()}"
+assert state.is_unavailable('bad'), 'bad should be marked unavailable'
+# Filtered tool call against unavailable repo returns the warning shape.
+out = query_graph(state, {'question': 'Hello', 'repo_filter': 'bad'})
+assert 'warning' in out and 'unavailable' in out, out
+# Tool call against good repo works.
+out2 = get_node(state, {'label': 'Hello', 'repo_filter': 'good'})
+assert 'Hello' in out2, out2
+# No-filter graph_stats should skip the bad repo, not crash.
+out3 = graph_stats(state, {})
+assert 'Repos loaded: 1' in out3, out3
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `graceful-failure script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Tier A item 1 — save_result writes to disk
+// ---------------------------------------------------------------------------
+
+test('save_result: persists Q/A pair to <group>-memory dir and returns path', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        // Override HOME so the save location lands in the tmpdir.
+        const env = { ...process.env, HOME: tmp };
+        const graphsDir = join(tmp, 'graphs');
+        mkdirSync(graphsDir, { recursive: true });
+        const script = `
+import json, os, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import save_result
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = save_result(state, {
+    'question': 'what calls Foo?',
+    'answer': 'Bar calls Foo via import.',
+    'type': 'query',
+    'nodes': ['repoA::n1', 'repoB::n2'],
+}, group='upvate')
+parsed = json.loads(out)
+assert 'memory_path' in parsed and 'saved_at' in parsed, parsed
+p = Path(parsed['memory_path'])
+assert p.exists() and p.stat().st_size > 0
+data = json.loads(p.read_text())
+assert data['version'] == 1
+assert data['question'].startswith('what calls Foo')
+assert data['type'] == 'query'
+assert data['nodes'] == ['repoA::n1', 'repoB::n2']
+# Group-memory dir is under the (overridden) HOME.
+assert str(p).startswith(${JSON.stringify(tmp)}), str(p)
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000, env });
+        assert.equal(r.status, 0, `save_result script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// ensureGroupGraphsDir / symlink layout (preserved from earlier tests)
+// ---------------------------------------------------------------------------
 
 test('ensureGroupGraphsDir: creates one symlink per repo pointing at graphify-out/graph.json', () => {
     const tmp = mkTmp();
