@@ -6,7 +6,7 @@
 // graphify env doesn't fail.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readlinkSync, lstatSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync, readlinkSync, lstatSync, existsSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -574,4 +574,290 @@ test('ensureGroupGraphsDir: sweeps stale entries from prior runs', () => {
         delete process.env.GFLEET_STATE_DIR;
         rmSync(tmp, { recursive: true, force: true });
     }
+});
+
+// ---------------------------------------------------------------------------
+// get_node_source
+// ---------------------------------------------------------------------------
+
+// Build a graphs-dir containing one repo's graph that points at a given source file.
+function seedGraphFile(graphsDir, repoSlug, nodes) {
+    const data = {
+        directed: false,
+        multigraph: false,
+        graph: {},
+        nodes,
+        links: [],
+    };
+    writeFileSync(join(graphsDir, `${repoSlug}.json`), JSON.stringify(data));
+}
+
+test('get_node_source: happy path returns snippet around the target line', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const srcFile = join(tmp, 'sample.py');
+        const lines = [];
+        for (let i = 1; i <= 50; i++) lines.push(`line_${i}`);
+        writeFileSync(srcFile, lines.join('\n'));
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'n1', label: 'thing', source_file: srcFile, source_location: 'L25' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import get_node_source
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(get_node_source(state, {'node_id': 'r::n1', 'context_lines': 5}))
+assert out['snippet_start_line'] == 20, out
+assert out['snippet_end_line'] == 30, out
+assert out['language'] == 'python', out
+assert 'line_25' in out['snippet']
+assert 'line_20' in out['snippet']
+assert 'line_30' in out['snippet']
+assert out['node_label'] == 'thing'
+assert out['repo'] == 'r'
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `get_node_source happy script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('get_node_source: missing source file returns error shape', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'n1', label: 'gone', source_file: join(tmp, 'does-not-exist.py'), source_location: 'L1' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import get_node_source
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(get_node_source(state, {'node_id': 'r::n1'}))
+assert out.get('error') == 'source file missing', out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `missing-file script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('get_node_source: context_lines clamped to 200', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const srcFile = join(tmp, 'big.py');
+        const lines = [];
+        for (let i = 1; i <= 1000; i++) lines.push(`line_${i}`);
+        writeFileSync(srcFile, lines.join('\n'));
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'n1', label: 'mid', source_file: srcFile, source_location: 'L500' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import get_node_source
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(get_node_source(state, {'node_id': 'r::n1', 'context_lines': 500}))
+# Clamped to 200 → start=300, end=700
+assert out['snippet_start_line'] == 300, out
+assert out['snippet_end_line'] == 700, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `clamp script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('get_node_source: language detection picks python and typescript', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const py = join(tmp, 'a.py'); writeFileSync(py, 'x = 1\n');
+        const ts = join(tmp, 'b.ts'); writeFileSync(ts, 'const x = 1;\n');
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'p', label: 'p', source_file: py, source_location: 'L1' },
+            { id: 't', label: 't', source_file: ts, source_location: 'L1' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import get_node_source
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+op = json.loads(get_node_source(state, {'node_id': 'r::p'}))
+ot = json.loads(get_node_source(state, {'node_id': 'r::t'}))
+assert op['language'] == 'python', op
+assert ot['language'] == 'typescript', ot
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `language script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// recent_activity
+// ---------------------------------------------------------------------------
+
+test('recent_activity: relative duration filter returns only recently mtimed nodes', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const fOld = join(tmp, 'old.py'); writeFileSync(fOld, 'x\n');
+        const fMid = join(tmp, 'mid.py'); writeFileSync(fMid, 'x\n');
+        const fNew = join(tmp, 'new.py'); writeFileSync(fNew, 'x\n');
+        // Backdate fOld 2 days, fMid 2 hours; fNew now.
+        const now = Date.now() / 1000;
+        const utimes = (p, t) => { utimesSync(p, t, t); };
+        utimes(fOld, now - 2 * 86400);
+        utimes(fMid, now - 2 * 3600);
+        utimes(fNew, now - 60);
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'a', label: 'a', source_file: fOld, source_location: 'L1' },
+            { id: 'b', label: 'b', source_file: fMid, source_location: 'L1' },
+            { id: 'c', label: 'c', source_file: fNew, source_location: 'L1' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import recent_activity
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(recent_activity(state, {'since': '1h'}))
+assert out['shown'] == 1, out
+assert out['nodes'][0]['node_id'] == 'r::c', out
+assert out['total_changed_files'] == 1, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `relative-duration script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('recent_activity: ISO timestamp cutoff', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const fOld = join(tmp, 'o.py'); writeFileSync(fOld, 'x\n');
+        const fNew = join(tmp, 'n.py'); writeFileSync(fNew, 'x\n');
+        const now = Date.now() / 1000;
+        const utimes = (p, t) => { utimesSync(p, t, t); };
+        utimes(fOld, now - 10 * 86400);
+        utimes(fNew, now - 60);
+        // Cutoff 5 days ago.
+        const cutoff = new Date((now - 5 * 86400) * 1000).toISOString();
+        seedGraphFile(graphsDir, 'r', [
+            { id: 'a', label: 'a', source_file: fOld, source_location: 'L1' },
+            { id: 'b', label: 'b', source_file: fNew, source_location: 'L1' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import recent_activity
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(recent_activity(state, {'since': ${JSON.stringify(cutoff)}}))
+assert out['shown'] == 1, out
+assert out['nodes'][0]['node_id'] == 'r::b', out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `iso-timestamp script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('recent_activity: repo_filter scopes results to one repo', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const fA = join(tmp, 'a.py'); writeFileSync(fA, 'x\n');
+        const fB = join(tmp, 'b.py'); writeFileSync(fB, 'x\n');
+        seedGraphFile(graphsDir, 'repoA', [
+            { id: 'na', label: 'na', source_file: fA, source_location: 'L1' },
+        ]);
+        seedGraphFile(graphsDir, 'repoB', [
+            { id: 'nb', label: 'nb', source_file: fB, source_location: 'L1' },
+        ]);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import recent_activity
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(recent_activity(state, {'since': '7d', 'repo_filter': 'repoA'}))
+assert out['shown'] == 1, out
+assert out['nodes'][0]['node_id'] == 'repoA::na', out
+out_all = json.loads(recent_activity(state, {'since': '7d'}))
+assert out_all['shown'] == 2, out_all
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `repo-filter script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('recent_activity: limit truncates and total_changed_files counts pre-truncation', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const nodes = [];
+        for (let i = 0; i < 5; i++) {
+            const f = join(tmp, `f${i}.py`);
+            writeFileSync(f, 'x\n');
+            nodes.push({ id: `n${i}`, label: `n${i}`, source_file: f, source_location: 'L1' });
+        }
+        seedGraphFile(graphsDir, 'r', nodes);
+        const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import recent_activity
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = json.loads(recent_activity(state, {'since': '7d', 'limit': 2}))
+assert out['shown'] == 2, out
+assert out['total_changed_files'] == 5, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `limit script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
 });

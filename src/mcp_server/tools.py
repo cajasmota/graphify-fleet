@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -570,4 +571,324 @@ def resolve_link_candidate(state: GraphState, arguments: dict) -> str:
         "candidate_id": candidate_id,
         "decision": "reject",
         "moved_to": "rejections",
+    })
+
+
+# ---------------------------------------------------------------------------
+# get_node_source — return source code surrounding a node's location
+# ---------------------------------------------------------------------------
+
+_LANGUAGE_BY_EXT = {
+    ".py": "python",
+    ".pyi": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".go": "go",
+    ".rb": "ruby",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".swift": "swift",
+    ".rs": "rust",
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".php": "php",
+    ".scala": "scala",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".sql": "sql",
+    ".html": "html",
+    ".css": "css",
+    ".md": "markdown",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".json": "json",
+    ".toml": "toml",
+}
+
+_GET_NODE_SOURCE_MAX_CONTEXT = 200
+_GET_NODE_SOURCE_MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+def _detect_language(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    return _LANGUAGE_BY_EXT.get(ext, "text")
+
+
+def _parse_source_location(loc: str) -> Optional[int]:
+    """`source_location` is typically `"L<line>"` (e.g. `"L142"`)."""
+    if not loc:
+        return None
+    m = re.match(r"^L(\d+)", loc.strip())
+    if not m:
+        # Plain integer also accepted.
+        if loc.strip().isdigit():
+            return int(loc.strip())
+        return None
+    return int(m.group(1))
+
+
+def _repo_root_for(state: GraphState, repo: str) -> Optional[Path]:
+    """Best-effort: each graph file is `<repo-root>/graphify-out/graph.json`
+    (typically symlinked into the gfleet `graphs_dir`). Resolve the symlink
+    and walk up two levels to find the repo root.
+    """
+    graph_path = state.graphs_dir / f"{repo}.json"
+    try:
+        real = graph_path.resolve()
+    except OSError:
+        return None
+    if real.parent.name == "graphify-out":
+        return real.parent.parent
+    return None
+
+
+def _resolve_source_path(state: GraphState, repo: str, source_file: str) -> Path:
+    p = Path(source_file)
+    if p.is_absolute():
+        return p
+    root = _repo_root_for(state, repo)
+    if root is not None:
+        return (root / source_file).resolve()
+    return p
+
+
+def _resolve_node_id(state: GraphState, node_id: str) -> tuple[Optional[str], Optional[str], Optional[dict]]:
+    """Return (repo, local_id, error_message). Either (repo, local_id, None)
+    on success, or (None, None, error) on failure."""
+    if "::" in node_id:
+        repo, local = node_id.split("::", 1)
+        G = state.graphs.get(repo)
+        if G is None or local not in G:
+            return None, None, "node not found"
+        return repo, local, None
+    # Unprefixed: search across all repos for an exact node-id match.
+    matches: list[tuple[str, str]] = []
+    for repo, G in state.graphs.items():
+        if node_id in G:
+            matches.append((repo, node_id))
+    if not matches:
+        return None, None, "node not found"
+    if len(matches) > 1:
+        return None, None, "ambiguous node_id (require <repo>::<id> prefix)"
+    repo, local = matches[0]
+    return repo, local, None
+
+
+def get_node_source(state: GraphState, arguments: dict) -> str:
+    state.refresh_if_stale()
+    node_id = str(arguments.get("node_id") or "").strip()
+    if not node_id:
+        return json.dumps({"error": "get_node_source: 'node_id' is required"})
+    raw_ctx = arguments.get("context_lines", 20)
+    try:
+        context_lines = int(raw_ctx)
+    except (TypeError, ValueError):
+        context_lines = 20
+    if context_lines < 0:
+        context_lines = 0
+    if context_lines > _GET_NODE_SOURCE_MAX_CONTEXT:
+        context_lines = _GET_NODE_SOURCE_MAX_CONTEXT
+
+    repo, local, err = _resolve_node_id(state, node_id)
+    if err is not None:
+        return json.dumps({"error": err, "node_id": node_id})
+
+    G = state.graphs[repo]
+    d = G.nodes[local]
+    source_file = d.get("source_file") or ""
+    source_location = d.get("source_location") or ""
+    label = d.get("label", local)
+
+    if not source_file:
+        return json.dumps({"error": "node has no source_file", "node_id": node_id})
+
+    line = _parse_source_location(source_location)
+    if line is None:
+        return json.dumps({"error": "could not parse source_location", "source_location": source_location})
+
+    resolved = _resolve_source_path(state, repo, source_file)
+    if not resolved.exists() or not resolved.is_file():
+        return json.dumps({"error": "source file missing", "source_file": str(resolved)})
+
+    try:
+        size = resolved.stat().st_size
+    except OSError as exc:
+        return json.dumps({"error": f"stat failed ({exc})", "source_file": str(resolved)})
+    if size > _GET_NODE_SOURCE_MAX_FILE_BYTES:
+        return json.dumps({"error": "file too large", "size_bytes": size})
+
+    try:
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return json.dumps({"error": f"read failed ({exc})", "source_file": str(resolved)})
+
+    file_lines = text.splitlines()
+    total = len(file_lines)
+    if total == 0:
+        return json.dumps({"error": "source file empty", "source_file": str(resolved)})
+
+    # 1-indexed clamping.
+    start = max(1, line - context_lines)
+    end = min(total, line + context_lines)
+    snippet = "\n".join(file_lines[start - 1:end])
+
+    return json.dumps({
+        "node_id": f"{repo}::{local}",
+        "source_file": str(resolved),
+        "source_location": source_location,
+        "language": _detect_language(str(resolved)),
+        "snippet": snippet,
+        "snippet_start_line": start,
+        "snippet_end_line": end,
+        "node_label": label,
+        "repo": repo,
+    })
+
+
+# ---------------------------------------------------------------------------
+# recent_activity — nodes whose source files changed since a cutoff
+# ---------------------------------------------------------------------------
+
+_DURATION_RE = re.compile(r"^(\d+)([hdwm])$")
+_DURATION_SECS = {
+    "h": 3600,
+    "d": 86400,
+    "w": 7 * 86400,
+    "m": 30 * 86400,
+}
+
+
+def _resolve_since(state: GraphState, since: str) -> Optional[float]:
+    """Return a unix timestamp cutoff or None if unresolvable."""
+    s = (since or "").strip()
+    if not s:
+        return None
+    # Relative duration.
+    m = _DURATION_RE.match(s)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        return _dt.datetime.now().timestamp() - n * _DURATION_SECS[unit]
+    # ISO 8601.
+    try:
+        iso = s.replace("Z", "+00:00")
+        dt = _dt.datetime.fromisoformat(iso)
+        return dt.timestamp()
+    except ValueError:
+        pass
+    # Git ref: try resolving in each repo's working dir; take the OLDEST.
+    timestamps: list[float] = []
+    for repo in state.graphs.keys():
+        root = _repo_root_for(state, repo)
+        if root is None:
+            continue
+        try:
+            r = subprocess.run(
+                ["git", "log", "-1", "--format=%ct", s],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode != 0:
+            continue
+        out = r.stdout.strip()
+        if not out:
+            continue
+        try:
+            timestamps.append(float(out))
+        except ValueError:
+            continue
+    if not timestamps:
+        return None
+    return min(timestamps)
+
+
+def recent_activity(state: GraphState, arguments: dict) -> str:
+    state.refresh_if_stale()
+    since = str(arguments.get("since") or "").strip()
+    repo_filter = arguments.get("repo_filter")
+    try:
+        limit = int(arguments.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    if limit < 0:
+        limit = 0
+
+    if not since:
+        return json.dumps({"error": "recent_activity: 'since' is required"})
+
+    cutoff = _resolve_since(state, since)
+    if cutoff is None:
+        return json.dumps({"error": "could not resolve 'since'", "since": since})
+
+    repos: list[str]
+    if repo_filter:
+        if repo_filter not in state.graphs:
+            return json.dumps({
+                "since": since,
+                "resolved_since_ts": cutoff,
+                "total_changed_files": 0,
+                "shown": 0,
+                "nodes": [],
+            })
+        repos = [repo_filter]
+    else:
+        repos = list(state.graphs.keys())
+
+    file_mtime_cache: dict[str, Optional[float]] = {}
+
+    def _file_mtime(path: str) -> Optional[float]:
+        if path in file_mtime_cache:
+            return file_mtime_cache[path]
+        try:
+            mt = os.stat(path).st_mtime
+        except OSError:
+            mt = None
+        file_mtime_cache[path] = mt
+        return mt
+
+    matched: list[dict] = []
+    changed_files: set[str] = set()
+    for repo in repos:
+        G = state.graphs.get(repo)
+        if G is None:
+            continue
+        for nid, d in G.nodes(data=True):
+            source_file = d.get("source_file") or ""
+            if not source_file:
+                continue
+            resolved = _resolve_source_path(state, repo, source_file)
+            mt = _file_mtime(str(resolved))
+            if mt is None:
+                continue
+            if mt < cutoff:
+                continue
+            changed_files.add(str(resolved))
+            matched.append({
+                "node_id": f"{repo}::{nid}",
+                "label": d.get("label", nid),
+                "source_file": str(resolved),
+                "mtime": mt,
+            })
+
+    matched.sort(key=lambda e: e["mtime"], reverse=True)
+    truncated = matched[:limit]
+    return json.dumps({
+        "since": since,
+        "resolved_since_ts": cutoff,
+        "total_changed_files": len(changed_files),
+        "shown": len(truncated),
+        "nodes": truncated,
     })

@@ -16,6 +16,8 @@
 #   graph_stats(repo_filter)
 #   shortest_path(source, target, max_hops, repo_filter)
 #   save_result(question, answer, type, nodes, repo_filter)
+#   get_node_source(node_id, context_lines)
+#   recent_activity(since, repo_filter, limit)
 from __future__ import annotations
 
 import argparse
@@ -175,6 +177,31 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                 },
             ),
             types.Tool(
+                name="get_node_source",
+                description="Return the source code surrounding a node's `source_location`. Saves a separate `Read` call when investigating a node. `node_id` may be `<repo>::<local_id>` or unprefixed (errors if ambiguous across repos).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "node_id": {"type": "string", "description": "Node id, optionally prefixed with `<repo>::`."},
+                        "context_lines": {"type": "integer", "default": 20, "description": "Lines of context above and below the target line. Clamped to 0..200."},
+                    },
+                    "required": ["node_id"],
+                },
+            ),
+            types.Tool(
+                name="recent_activity",
+                description="Return nodes whose `source_file` mtime is at or after a cutoff. `since` accepts a relative duration (`24h`, `7d`, `2w`, `1m`), an ISO 8601 timestamp, or a git ref (resolved per-repo; OLDEST resolved timestamp is used as cutoff).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "since": {"type": "string", "description": "Relative duration, ISO 8601 timestamp, or git ref."},
+                        "repo_filter": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50},
+                    },
+                    "required": ["since"],
+                },
+            ),
+            types.Tool(
                 name="save_result",
                 description="Persist a question/answer pair (and the supporting node IDs) so the agent can refer back to it later. Writes to ~/.graphify/groups/<group>-memory/<timestamp>-<sha8>.json. Returns the absolute path.",
                 inputSchema={
@@ -201,6 +228,8 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
         "graph_stats": lambda args: _tools.graph_stats(state, args),
         "shortest_path": lambda args: _tools.shortest_path(state, args),
         "save_result": lambda args: _tools.save_result(state, args, group=group),
+        "get_node_source": lambda args: _tools.get_node_source(state, args),
+        "recent_activity": lambda args: _tools.recent_activity(state, args),
         "list_link_candidates": lambda args: _tools.list_link_candidates(state, args),
         "resolve_link_candidate": lambda args: _tools.resolve_link_candidate(state, args),
     }
