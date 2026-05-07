@@ -150,6 +150,22 @@ The point of gfleet is that you shouldn't need any of it.
 
 ---
 
+## CLI reference
+
+Detailed per-command documentation lives under [`docs/cli/`](docs/cli/README.md):
+
+| Topic | Commands |
+|-------|----------|
+| [`docs/cli/setup.md`](docs/cli/setup.md) | `wizard` (alias `new`), `onboard`, `install` |
+| [`docs/cli/operate.md`](docs/cli/operate.md) | `update`, `doctor`, `status`, `list` (alias `ls`), `help` |
+| [`docs/cli/watchers.md`](docs/cli/watchers.md) | `start`, `stop`, `restart` |
+| [`docs/cli/repair.md`](docs/cli/repair.md) | `rebuild`, `reset`, `remerge`, `uninstall` |
+| [`docs/cli/docs.md`](docs/cli/docs.md) | `docs status` / `run` / `path` / `init-cli` / `silence` / `unsilence` / `clear-stale` / `mark-stale`, plus `/generate-docs` skill flags |
+| [`docs/cli/monorepo.md`](docs/cli/monorepo.md) | `monorepo add` / `remove` / `list` |
+| [`docs/cli/advanced.md`](docs/cli/advanced.md) | `skills`, `conventions`, `patch`, env vars, hidden behaviors |
+
+---
+
 ## License
 
 MIT.
