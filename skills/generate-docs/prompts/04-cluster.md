@@ -43,15 +43,45 @@ After writing each file, the verification checklist MUST be run before saving. I
 
 ---
 
-## Read the plan FIRST
+## Read the plan FIRST — and the cache files it references
 
 Before writing anything, read `<repo>/docs/.plan.md`. The plan tells you:
 
 - The folder shape per module (FLAT / FLAT-WITH-SPLITTING / SUBFOLDER)
 - Exactly which files to create and their boundaries (one class per file in most cases)
 - Which artifacts get dedicated files vs fold into README
+- The slice manifest (`docs/.plan.slice-manifest.json`) — which source files belong to your slice
+- The digest paths (`docs/.cache/digests/<file-stem>.digest.md`) for any source file ≥1500 LOC referenced by ≥2 deliverables
+- The god-node snippet paths (`docs/.cache/god-nodes/<node-id>.md`) for nodes with ≥30 incoming edges
+- The cross-cutting stub files already on disk at `docs/cross-cutting/<concern>.md` with their pre-declared anchor lists in YAML front-matter
 
 **You must follow the plan's file list verbatim.** Do not collapse multiple per-class files back into one shared file. Do not skip files because they "look small." If the plan was wrong, fix the plan and restart Pass 4 — don't deviate silently.
+
+### Digest-first reading rule (mandatory cost discipline)
+
+If your dispatch payload names a digest path for a source file you need to document:
+
+1. **READ THE DIGEST FIRST.** It contains class signatures with line ranges, public method/`@action` list with line ranges, top-level imports, depth-1 graph neighbors, and class-level attributes (`permission_classes`, `queryset`, etc.).
+2. From the digest, identify the specific line ranges you need for the actions/methods you're documenting.
+3. Read ONLY those line ranges from the source. Do NOT read the whole file.
+4. Read the full file ONLY if (a) the digest is missing, OR (b) you've identified that closure-depth-1 from the digest is insufficient (e.g. the action's logic delegates to a helper not surfaced in the digest's neighbor list — read that helper specifically, not the whole containing file).
+
+This is the single biggest cost reduction in the pipeline. Three subagents independently full-reading a 3,879-LOC viewset costs ~360k redundant input tokens; the digest cuts that to ~30k once + targeted ranges per writer.
+
+### God-node linking rule (mandatory — do not re-describe)
+
+When your doc references a god node (any node listed under `## God nodes` in `.plan.md`), your dispatch payload includes a `snippet_path`. You MUST:
+
+- Link to the canonical anchor: `` [`<node-id>`](../../cross-cutting/<concern>.md#<node-id>) ``
+- NOT re-describe the node inline. A one-line clarification of HOW the current module uses it is fine; a paragraph explaining the node itself is not.
+
+The verification checklist enforces this. If your doc would re-describe a god node, replace the description with the canonical link.
+
+### Cross-cutting stub anchors (link safely; Pass 6 fills bodies)
+
+Pass 2 has already written `docs/cross-cutting/<concern>.md` stub files with stable, pre-declared anchor IDs in YAML front-matter. You may link to `../../cross-cutting/<concern>.md#<anchor>` for ANY anchor in that file's `anchors:` list, even though Pass 6 hasn't filled the body yet — Pass 6 will define every pre-declared anchor before the run ends, and Pass 8 will verify.
+
+If you need to link to an anchor that is NOT in the stub's `anchors:` list, you may EITHER (a) request its addition by updating the stub's YAML `anchors:` list (allowed in Pass 4 — this is how Pass 4 negotiates contract with Pass 6), OR (b) use a non-anchor link with `(anchor TBD)` and add to `.cross-link-todo.md`.
 
 ---
 
@@ -63,21 +93,59 @@ Before writing the file:
 
 1. Identify the unit (the class/handler-group name)
 2. List **every public method/action/route** on that unit explicitly. This is your completeness checklist.
-3. Read the *whole file* (or the whole class if other classes share the file) per R1 below.
+3. Read the *whole file* (or the whole class if other classes share the file) per R1 below — UNLESS a digest is available, in which case follow the digest-first rule above.
 4. Document every item on the checklist or mark explicit 🔴 with the unread item names. Never write a vague "N additional methods" placeholder.
+
+---
+
+## R0.1 — Big-file splitting decision tree (applies to ANY large file, not just viewsets)
+
+The earlier failure mode: the splitting heuristic only fired on `*_viewset.py` filenames, missing oversized handler files, service modules, hook bundles, and store slices. Replace that with this generic decision tree, which fires on:
+
+- any source file ≥1500 LOC, OR
+- any file with >10 public actions/methods/exports (`@action`, `@app.route`, `@router.<verb>`, top-level `export function`/`export const`, public methods on a single class), OR
+- any file the coordinator marks 🔴-risk in Pass 2.
+
+Decision tree:
+
+| Condition | Strategy |
+|-----------|----------|
+| LOC < 1500 OR public-actions ≤ 3 | **No split.** Single subagent documents the whole file. |
+| LOC ≥ 1500, public-actions > 3, **low** super/mixin density (`grep -c 'super()' <file>` or stack-equivalent below the threshold) | **Graph-aware closure split.** One subagent per public action. Each subagent reads (a) the digest, (b) the action's body line range from the source, (c) the closure manifest the coordinator dispatched (depth-1 graph neighbors of THIS action — the call sites + helpers it uses). Subagent does NOT read the whole file. |
+| LOC ≥ 1500, public-actions > 3, **high** super/mixin density (super/mixin density above threshold — closure cannot be trusted because behavior is inherited from parents the closure won't capture) | **One subagent per public action, whole-file read each.** Don't trust the closure; the parent class may inject permission checks, queryset filters, serializer choice, etc. that the closure manifest misses. |
+
+Stack-equivalent super/mixin density measures (the convention file may override these defaults):
+
+- Python/Django/DRF: `grep -cE 'super\(\)|class\s+\w+\(.*Mixin' <file>`; threshold ≥ 5 = high.
+- TypeScript/React: count of `extends `, `implements `, and `useContext(` calls; threshold ≥ 5 = high.
+- Generic: count of `super`/`super(` and `extends ` declarations; threshold ≥ 5 = high.
+
+**Bake this into dispatch.** The coordinator decides which strategy applies per qualifying file in Pass 2 and records it in the plan under each module's file list as `(split: closure)` or `(split: per-action+whole-file)` or `(split: none)`. Pass 4 writers MUST honor the chosen strategy.
+
+### Completeness verification (mandatory after writes)
+
+After all subagents covering a split file have returned, the coordinator (or the orchestrator on Windsurf) MUST grep the source file for the language-appropriate public-action pattern and confirm every match has a corresponding doc entry. Patterns:
+
+- DRF: `grep -nE '@action\b|def\s+(list|retrieve|create|update|partial_update|destroy)\s*\(' <file>`
+- Flask/Quart: `grep -nE '@app\.route|@bp\.route' <file>`
+- FastAPI: `grep -nE '@(app|router)\.(get|post|put|patch|delete|head|options)\b' <file>`
+- Express/Nest: scan controller decorators or `router.<verb>(`
+- Generic JS/TS exports: `grep -nE '^export\s+(async\s+)?function|^export\s+const\s+\w+\s*=' <file>`
+
+If any match has no doc entry: flag with 🔴 INCOMPLETE listing the specific public-action names that were missed. Do NOT silently drop them.
 
 ---
 
 ## R1 — Read the entire unit before writing
 
-**Read budget by file size**:
+**Read budget by file size** (overridden by digest-first rule when a digest exists):
 
 | Source file size | Strategy |
 |------------------|----------|
 | < 300 LOC | Read the whole file in one pass before writing anything |
 | 300-800 LOC | Two passes: (1) structure scan (class declarations + method signatures), (2) full body read of the class being documented |
 | 800-2000 LOC | Read every line of the class being documented in this file. For other classes that share the file, read signatures only. |
-| > 2000 LOC | Same as above. If the plan didn't already split this further, **flag the plan as wrong** and split it via 🔴 in the plan's "Open questions" section before continuing. |
+| > 2000 LOC | Digest-first per the rule above. If the plan didn't split per R0.1, **flag the plan as wrong** and split it via 🔴 in the plan's "Open questions" section before continuing. |
 
 If you fail to complete the full read because of context budget, **do not write a summary that hides this**. Mark the file 🔴 INCOMPLETE per `snippets/confidence-markers.md` with the specific unread method names.
 
@@ -555,6 +623,35 @@ What NOT to save (skip):
 Skip count: also track. If a module produced 0 save-results, that's suspicious — either the module is genuinely simple (only structural facts) or you missed depth opportunities.
 
 ---
+
+## Glossary auto-append (Pass 4, 5, 6 share this rule)
+
+Pass 0 / Pass 7 produce the glossary at `<group_docs>/product/glossary.md` (or `docs/glossary.md` for non-group repos), seeded from `docs-config.json` vocabulary. The human-curated section above is authoritative and must NEVER be modified by Pass 4/5/6.
+
+When you encounter a domain term that:
+- you use in italics or in a definition-tone sentence in this doc, AND
+- is NOT already defined in the glossary,
+
+append a stub entry to the auto-managed block at the bottom of the glossary file:
+
+```markdown
+<!-- generate-docs:glossary-auto-append:start -->
+
+### `<term>`
+
+One-sentence definition in domain terms. Source: <module-or-file-where-first-encountered>.
+
+<!-- generate-docs:glossary-auto-append:end -->
+```
+
+Rules:
+- The marker block is created on first auto-append if missing.
+- Append only NEW terms (read the file first; check that the term is absent from BOTH the human section AND the auto-append block).
+- Order entries within the block alphabetically by term.
+- Use file-locking discipline: read, append, write atomically. If two subagents race, the second-to-write reads the latest contents (which include the first writer's append) before adding its own term.
+- The verification checklist requires: any new domain term used in italics or definition-tone in your doc is in the glossary (either pre-existing or auto-appended by you).
+
+A term is "domain" (eligible for the glossary) when it names a business concept, status, role, lifecycle phase, or proprietary noun. It is NOT eligible when it's a code symbol (those are graph-searchable already and live in backticks, not italics).
 
 ## Cross-repo link resolution
 

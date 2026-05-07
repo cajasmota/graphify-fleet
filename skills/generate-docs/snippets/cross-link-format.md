@@ -51,6 +51,29 @@ Slugify: lowercase, replace each non-alpha-numeric with dash, collapse consecuti
 
 Pass 8 verifies anchors against actual headings.
 
+## Cross-repo links to docs that don't exist yet
+
+When a doc would link to a sibling repo whose docs haven't been generated yet (or whose target page hasn't been written this run), write the link AS IF the doc exists, mark it as cross-repo-pending, and append the link target + source location to `<repo>/docs/.cross-repo-pending.md`. Pass 8 will validate: anchors that have since become real are unmarked; broken ones stay flagged.
+
+Two equivalent ways to mark the link (pick the one that fits the surrounding prose; both are detected by Pass 8):
+
+1. HTML wrapper around the markdown link (preferred when the link is inline in a sentence):
+   ```markdown
+   Calls <span class="cross-repo-pending">[`myapp-mobile.scheduling.useSchedule`](../../../myapp-mobile/docs/modules/scheduling/hooks.md#useschedule)</span>.
+   ```
+2. Footnote-style suffix (preferred in tables and tight bullet lists where HTML is awkward):
+   ```markdown
+   - Caller: [`myapp-mobile.scheduling.useSchedule`](../../../myapp-mobile/docs/modules/scheduling/hooks.md#useschedule)[^cross-repo]
+   ```
+   With one `[^cross-repo]: cross-repo-pending — Pass 8 will resolve.` footnote per file.
+
+Append to `<repo>/docs/.cross-repo-pending.md`:
+```markdown
+- <source-doc>:<line> → <target-rel-path>#<anchor>  (<reason: target repo not generated yet | target page missing>)
+```
+
+Pass 8 reads `.cross-repo-pending.md` first, attempts to resolve each entry against the now-current state of all repos in the group, removes the marker for resolved entries, and leaves the remaining entries flagged.
+
 ## Glossary back-links
 
 When a glossary term appears in body text:

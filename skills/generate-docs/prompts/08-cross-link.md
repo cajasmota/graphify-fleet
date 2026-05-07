@@ -53,6 +53,19 @@ For each link `<text>(<rel-path>#<anchor>)`:
    - If not: replace anchor portion with no anchor, append ` (anchor TBD)`. Add to broken-links.
 5. If file exists and no anchor: OK as-is.
 
+### 2b. Resolve cross-repo-pending markers
+
+Read `<repo>/docs/.cross-repo-pending.md` (and the equivalent file in every other repo of the group, when running `--all`). Each entry is a link Pass 4/5/6 wrote AS IF the doc existed but flagged because the target wasn't generated yet.
+
+For each pending entry:
+
+1. Re-resolve the target file (relative path from source) against the now-current state of all repos in the group.
+2. If the target file exists and the anchor is valid: remove the `class="cross-repo-pending"` HTML wrapper or `[^cross-repo]` footnote suffix from the source doc. Drop the entry from `.cross-repo-pending.md`.
+3. If the target file exists but the anchor is missing: keep the marker, switch the link to non-anchored with `(anchor TBD)`, leave the entry in `.cross-repo-pending.md` with the reason updated to `target page exists, anchor missing`.
+4. If the target file still does NOT exist: keep the marker, leave the entry as-is.
+
+Rewrite `.cross-repo-pending.md` with only the still-pending entries. If empty, delete the file.
+
 ### 3. Glossary back-links
 
 If a glossary exists at `<group_docs>/product/glossary.md`:

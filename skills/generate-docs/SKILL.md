@@ -48,6 +48,8 @@ The user will trigger you in one of these forms:
 - `/generate-docs --section <path>` — regenerate one section (e.g. `modules/orders/services.md`)
 - `/generate-docs --module <name>` — regenerate every section whose doc path begins with `modules/<name>/` (the orchestrator finds these on disk and skips Passes 1/2 module-discovery for the rest)
 - `/generate-docs --since <gitref>` — orchestrator runs `git diff --name-only <gitref> HEAD` and treats those files as the "stale" set, then proceeds like `--refresh`
+- `/generate-docs --cost-gate <usd>` — override the default $5 cost gate. When the Pass 2 estimate exceeds this value the run pauses after a deterministic "validation slice" (top 3 🔴-risk modules + top 2 cross-cutting concerns) and asks the user to reply "continue" before doing the rest. Also overridable via the `GENERATE_DOCS_COST_GATE` env var. Set to `0` to disable.
+- `/generate-docs --skip-modules a,b,c` — comma-separated module slugs to exclude from this run (Pass 2 lists per-module token costs so the user can pick). Skipped modules are not regenerated and not counted toward the cost estimate; their existing on-disk docs remain valid cross-link targets.
 
 If the user passes a path, treat that as the repo root. Default to `.`.
 
@@ -88,12 +90,31 @@ Each pass has a dedicated prompt file in `prompts/`. **You must read the relevan
 | 3 | Repo overview | After plan confirmed | `prompts/03-overview.md` |
 | 4 | **Per-cluster deep dive** | After overview; expensive; subagent target | `prompts/04-cluster.md` |
 | 5 | Reference pages | After clusters | `prompts/05-reference.md` |
-| 6 | Cross-cutting concerns | After clusters | `prompts/06-cross-cutting.md` |
+| 6 | Cross-cutting concerns | After clusters (fills the stub anchors Pass 2 pre-declared) | `prompts/06-cross-cutting.md` |
 | 7 | Group synthesis | Only if `--group` mode AND all repos have run | `prompts/07-group-synthesis.md` |
 | 8 | Cross-link verification | Always last | `prompts/08-cross-link.md` |
 | 9 | VitePress static-site config | Default-on; opt out with `--no-static-site` | `prompts/09-vitepress.md` |
 
 ---
+
+## Caches and pre-declared anchors (read once)
+
+Pass 2 (plan) does more than emit `.plan.md`. It also pre-creates artifacts that downstream passes consume so they can run in any order without breaking links:
+
+- **Cross-cutting stub files.** For every cross-cutting concern in the inventory, Pass 2 writes an empty `docs/cross-cutting/<concern>.md` with a YAML front-matter `anchors:` list (the stable anchor IDs Pass 6 will eventually define) and a `<!-- pass-6-fill-here -->` marker. Pass 4 module writers link to `../../cross-cutting/<concern>.md#<anchor>` knowing the file and anchor will exist by the end of the run. Pass 6 fills the body and verifies every pre-declared anchor is now defined.
+- **File digests** at `docs/.cache/digests/<file-stem>.digest.md`. For any source file ≥1500 LOC referenced by more than one Pass 4 deliverable, the coordinator pre-computes a digest BEFORE dispatching writers (class signatures + line ranges, public methods/`@action` list with line ranges, top-level imports, depth-1 graph neighbors, class-level attributes like `permission_classes`/`queryset`/`lookup_field`). Pass 4 writer subagents are instructed to READ THE DIGEST FIRST and only read the specific line ranges they need from the source — no full-file reads unless the digest is missing or closure depth-1 is insufficient. This is the single biggest cost reduction in the pipeline.
+- **God-node snippets** at `docs/.cache/god-nodes/<node-id>.md`. For every node with ≥30 incoming edges (a "god node" — e.g. `CustomPagePermissionCheck`, `S3Helper`, `MongoDBConnection`), Pass 2 writes a one-paragraph canonical description. Pass 4 writers receive this snippet path in their dispatch and MUST link to the canonical anchor (`../../cross-cutting/<file>.md#<node-id>`) instead of re-describing the node inline. The verification checklist enforces this.
+
+These caches are scoped to the current run (not committed) but live under `docs/.cache/` so re-runs can reuse them when the underlying source SHA hasn't changed. The whole `docs/.cache/` directory is safe to delete; it will be rebuilt.
+
+## Cost gate and validation slice
+
+When the Pass 2 cost estimate exceeds the gate (default `$5`, override via `--cost-gate <usd>` or `GENERATE_DOCS_COST_GATE` env var; `0` disables), the coordinator does NOT proceed straight to Pass 4 with the full plan. Instead it runs Passes 3-6 only for a deterministic **validation slice**:
+
+- Top 3 modules by 🔴-risk marker in Pass 2 (ties broken by descending LOC).
+- Top 2 cross-cutting concerns by `used_in_modules` count (ties broken alphabetically).
+
+After the validation slice writes complete, the coordinator prints a summary (files written, 🔴 count, 🟡 count, save-result count, observed token spend) and asks the user to reply `continue` to process the rest of the plan or `stop` to end the run with the validation slice as the final output. In `--autonomous` mode the gate auto-approves only when observed spend on the slice is ≤ 1.5× the per-module estimate; otherwise it stops with a 🔴 status for human review.
 
 ## Stack-specific conventions
 

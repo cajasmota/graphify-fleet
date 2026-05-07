@@ -4,6 +4,8 @@ Repo-wide reference docs that aren't per-module.
 
 **Apply `conventions/_graph-searchability.md`**: every env var, settings key, script name, dependency package, CLI command, file path in backticks every time. Every fenced code block language-tagged (e.g. ` ```bash `, ` ```yaml `, ` ```json `).
 
+**Glossary auto-append rule** (shared with Passes 4 and 6): see `prompts/04-cluster.md` "Glossary auto-append" section. When you use a domain term in italics or in a definition-tone sentence and the term is not yet in the glossary, append a stub entry to the `<!-- generate-docs:glossary-auto-append:start -->` block at the bottom of the glossary file.
+
 ## Orchestration model
 
 On **Claude Code**, the orchestrator running this skill is coordinator-only (per `SKILL.md`): it MUST delegate the actual writing of each file in this pass to a subagent. The subagent should be given:

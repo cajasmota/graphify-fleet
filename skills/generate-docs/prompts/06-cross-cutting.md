@@ -4,6 +4,21 @@ Concerns that span multiple modules within this repo. Document once, link from e
 
 **Apply `conventions/_graph-searchability.md`**: every pattern name (permission class, decorator, helper function, middleware) in backticks every time, including in headings. Every fenced code block language-tagged.
 
+**Glossary auto-append rule** (shared with Passes 4 and 5): see `prompts/04-cluster.md` "Glossary auto-append" section.
+
+## Stub-fill model — Pass 2 already created the file with pre-declared anchors
+
+Pass 2 wrote each `docs/cross-cutting/<concern>.md` as a stub with YAML front-matter that lists the **pre-declared anchor IDs**. Pass 4 module writers have been linking to those anchors safely throughout the run, knowing Pass 6 will fill the bodies before the run ends.
+
+Your job in Pass 6:
+
+1. Read the stub. Note its `anchors:` list — that list is a CONTRACT.
+2. Read the cross-cutting snippet bundle (primary files + per-module call sites).
+3. If the concern owns one or more god nodes (listed under `## God nodes` in `.plan.md`), read the god-node snippet at `docs/.cache/god-nodes/<node-id>.md` and incorporate it as the canonical description for that node, with the anchor id matching the snippet filename.
+4. Replace the `<!-- pass-6-fill-here -->` marker with the full body per the canonical template.
+5. **Verify every pre-declared anchor is now defined** — every entry in the YAML `anchors:` list MUST correspond to a heading in the body whose slug (per GitHub-flavored slug rules) matches. If any anchor is missing: either add the heading, or remove the anchor from the YAML list AND record the change in `<repo>/docs/.cross-link-todo.md` so Pass 4 writers can be told their links to that anchor are now broken (Pass 8 will catch them too, but earlier is better).
+6. Update YAML front-matter `status: stub` → `status: filled`.
+
 ## Canonical page template
 
 The page format for every `docs/cross-cutting/<concern>.md` file is defined by the canonical output-template:

@@ -24,6 +24,11 @@ Before saving any `.md` output:
   - [ ] Headings that name a specific code symbol put that symbol in backticks IN the heading text (e.g. `` ### `OrderViewSet` ``, NOT `### OrderViewSet (class)`).
   - [ ] Every fenced code block carries a language tag (` ```python `, ` ```ts `, ` ```bash `, etc.) — no bare ` ``` ` blocks for real code.
   - [ ] No bold / italic / quotation marks used as a substitute for backticks on code symbols.
+- [ ] **God-node canonical-link rule**: if your doc references any node listed under `## God nodes` in `.plan.md`, you link to its canonical anchor (`../../cross-cutting/<concern>.md#<node-id>`) and you do NOT re-describe the node. A one-line clarification of how THIS module uses it is fine; a paragraph explaining the node itself fails this check.
+- [ ] **Cross-cutting anchor links**: every link to `../../cross-cutting/<concern>.md#<anchor>` either targets an anchor in that stub's YAML `anchors:` list, OR you've added the anchor to the list (Pass 6 will define it), OR you've used a non-anchor link with `(anchor TBD)` and added an entry to `.cross-link-todo.md`.
+- [ ] **Cross-repo-pending marker**: any cross-repo link to a doc that doesn't exist yet is wrapped in `<span class="cross-repo-pending">...</span>` (or has a `[^cross-repo]` footnote suffix) AND has been appended to `<repo>/docs/.cross-repo-pending.md`.
+- [ ] **Glossary auto-append**: every domain term you used in italics or in a definition-tone sentence is in the glossary — either pre-existing (in the human-curated section) or auto-appended by you (in the `<!-- generate-docs:glossary-auto-append:start --> ... <!-- :end -->` block at the bottom). Code symbols (in backticks) are NOT eligible for the glossary.
+- [ ] **Digest-first compliance**: if your dispatch payload included a digest path, you read the digest first and only read targeted line ranges from the source. You did NOT full-read the source unless the digest was missing or closure depth-1 was insufficient.
 
 ---
 
@@ -59,6 +64,7 @@ After writing this file, verify:
   - [ ] non-obvious parameter interactions
 - [ ] Mermaid sequenceDiagram if ≥3 side effects OR ≥3 collaborators
 - [ ] **No endpoint summarised as a one-liner unless the code is genuinely one-liner CRUD**
+- [ ] **Completeness grep** (mandatory for split files per R0.1): after writes, the coordinator (or you, on Windsurf) grepped the source for the language-appropriate public-action pattern (`@action`, `@app.route`, `@router.<verb>`, `export function`, etc.) and confirmed every match has a doc entry. Misses flagged 🔴 with specific public-action names.
 
 ---
 
@@ -116,6 +122,9 @@ After writing this file, verify:
 - [ ] 2-5 named patterns with explanation + code ref + when-to-use
 - [ ] Consumers table: which modules use this + how
 - [ ] Gotchas section: things easy to get wrong
+- [ ] **Every pre-declared anchor in YAML front-matter `anchors:` is now defined as a heading whose slug matches** (Pass 6 contract with Pass 4). If any anchor cannot be defined: removed from the YAML list AND recorded in `.cross-link-todo.md`.
+- [ ] YAML front-matter `status:` updated from `stub` to `filled`.
+- [ ] God nodes the concern owns are described once (canonical) using the snippet at `docs/.cache/god-nodes/<node-id>.md`, with the heading slug equal to the node id.
 
 ---
 
