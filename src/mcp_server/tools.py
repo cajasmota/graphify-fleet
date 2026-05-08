@@ -87,13 +87,62 @@ def _approx_tokens(text: str) -> int:
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
-def _node_line(G: nx.Graph, nid: str) -> str:
+def _format_loc(loc: str) -> str:
+    """Render `source_location` as `:N` when it parses, else as-is.
+
+    `source_location` is conventionally `"L142"`. The compact format renders
+    paths as `path/to/file.py:142` so the value is grep/editor-friendly.
+    """
+    if not loc:
+        return ""
+    s = str(loc).strip()
+    if not s:
+        return ""
+    if s.startswith("L") and s[1:].isdigit():
+        return f":{s[1:]}"
+    if s.isdigit():
+        return f":{s}"
+    return f":{s}"
+
+
+def _node_line(
+    G: nx.Graph,
+    nid: str,
+    *,
+    drop_community: bool = False,
+    drop_repo: bool = False,
+) -> str:
+    """Compact node line.
+
+    Format: `<label>  <source_file>:<line>` with optional ` [community=N repo=R]`
+    suffix when those fields are NOT constant across the rendered set (caller
+    decides via `drop_*` flags). Two spaces between label and path.
+    """
     d = G.nodes[nid]
-    return (
-        f"NODE {_sanitize_label(d.get('label', nid))} "
-        f"[src={d.get('source_file', '')} loc={d.get('source_location', '')} "
-        f"community={d.get('community', '')} repo={d.get('repo', '')}]"
-    )
+    label = _sanitize_label(d.get("label", nid))
+    source = d.get("source_file", "") or ""
+    loc = _format_loc(d.get("source_location", "") or "")
+    line = f"{label}  {source}{loc}".rstrip()
+    extras: list[str] = []
+    if not drop_community:
+        community = d.get("community", "")
+        if community != "" and community is not None:
+            extras.append(f"community={community}")
+    if not drop_repo:
+        repo = d.get("repo", "")
+        if repo:
+            extras.append(f"repo={repo}")
+    if extras:
+        line = f"{line}  [{' '.join(extras)}]"
+    return line
+
+
+# Edge relations whose presence is implied by neighbor structure when both
+# endpoints are already in the rendered node set. Skipping them shaves the
+# bulk of edge rows in `query_graph` outputs without losing information —
+# the call edges are reconstructable from the node list. High-information
+# relations (imports, references, inherits_from, etc.) are always rendered.
+_IMPLICIT_EDGE_RELATIONS = frozenset({"calls", "call"})
 
 
 def _edge_line(G: nx.Graph, u: str, v: str) -> Optional[str]:
@@ -101,15 +150,32 @@ def _edge_line(G: nx.Graph, u: str, v: str) -> Optional[str]:
         return None
     raw = G[u][v]
     d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
-    context = d.get("context")
-    context_suffix = f" context={context}" if context else ""
-    method = d.get("method")
-    method_suffix = f" method={method}" if method else ""
-    return (
-        f"EDGE {_sanitize_label(G.nodes[u].get('label', u))} "
-        f"--{d.get('relation', '')} [{d.get('confidence', '')}{context_suffix}{method_suffix}]--> "
-        f"{_sanitize_label(G.nodes[v].get('label', v))}"
-    )
+    relation = (d.get("relation") or "").strip()
+    src = _sanitize_label(G.nodes[u].get("label", u))
+    tgt = _sanitize_label(G.nodes[v].get("label", v))
+    suffix = f"  [{relation}]" if relation and relation.lower() not in _IMPLICIT_EDGE_RELATIONS else ""
+    if not relation:
+        return f"{src} -> {tgt}"
+    return f"{src} -> {tgt}{suffix}" if suffix else f"{src} -> {tgt}"
+
+
+def _is_implicit_calls_edge(G: nx.Graph, u: str, v: str, kept_set: set[str]) -> bool:
+    """Edge is droppable when relation is `calls` AND both endpoints are in
+    the rendered node list AND it is not a cross-repo edge (those carry
+    information the node list alone can't convey).
+    """
+    if not G.has_edge(u, v):
+        return False
+    if u not in kept_set or v not in kept_set:
+        return False
+    raw = G[u][v]
+    d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+    relation = (d.get("relation") or "").strip().lower()
+    if relation not in _IMPLICIT_EDGE_RELATIONS:
+        return False
+    if d.get("cross_repo"):
+        return False
+    return True
 
 
 def _category_for(d: dict) -> str:
@@ -158,81 +224,172 @@ def _rank_nodes_for_truncation(
     return ordered_seeds + rest
 
 
+def _common_field(G: nx.Graph, ids: list[str], field: str):
+    """Return the shared value of `field` across nodes if all match (and is
+    non-empty / non-None), else None. Used to suppress redundant per-row
+    `community=` / `repo=` columns and surface them in the header instead.
+    """
+    seen = None
+    for nid in ids:
+        if nid not in G:
+            return None
+        v = G.nodes[nid].get(field, "")
+        if v == "" or v is None:
+            return None
+        if seen is None:
+            seen = v
+        elif v != seen:
+            return None
+    return seen
+
+
+def _omitted_breakdown(G: nx.Graph, omitted: list[str]) -> str:
+    """Two-axis breakdown: 'X from <repo_a>, Y from <repo_b>; A functions, B classes'.
+    Repos surfaced first (where), then file_type (what)."""
+    repo_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    for nid in omitted:
+        d = G.nodes[nid] if nid in G else {}
+        r = d.get("repo") or ""
+        t = d.get("file_type") or ""
+        if r:
+            repo_counts[r] = repo_counts.get(r, 0) + 1
+        if t:
+            type_counts[t] = type_counts.get(t, 0) + 1
+    parts: list[str] = []
+    if repo_counts:
+        repos = ", ".join(f"{c} from {r}" for r, c in sorted(repo_counts.items(), key=lambda kv: -kv[1]))
+        parts.append(repos)
+    if type_counts:
+        types = ", ".join(f"{c} {t}" for t, c in sorted(type_counts.items(), key=lambda kv: -kv[1]))
+        parts.append(types)
+    if not parts:
+        # Fallback: single-axis category for nodes without repo/file_type.
+        cats: dict[str, int] = {}
+        for nid in omitted:
+            cats[_category_for(G.nodes[nid] if nid in G else {})] = cats.get(_category_for(G.nodes[nid] if nid in G else {}), 0) + 1
+        parts.append(", ".join(f"{c} {n}" for n, c in sorted(cats.items(), key=lambda kv: -kv[1])))
+    return "; ".join(parts)
+
+
+def _render_subgraph(
+    G: nx.Graph,
+    kept: list[str],
+    edges: list[tuple],
+    *,
+    matched_count: int,
+    edge_total: int,
+    repo_filter_active: bool,
+) -> str:
+    """Render the kept node list + filtered edge list using the compact
+    section-header format. Drops redundant `community=` / `repo=` per-row
+    when constant across the rendered set, surfaces them in the header.
+    Drops implicit `calls` edges where both endpoints are in the kept set.
+    """
+    if not kept:
+        return ""
+    common_community = _common_field(G, kept, "community")
+    common_repo = _common_field(G, kept, "repo")
+    drop_community = common_community is not None
+    # Suppress per-row repo when a repo_filter is active OR all kept nodes
+    # share the same repo (the header carries it once).
+    drop_repo = repo_filter_active or common_repo is not None
+
+    header_bits: list[str] = []
+    if drop_community and common_community is not None:
+        header_bits.append(f"community: {common_community}")
+    if drop_repo and common_repo is not None:
+        header_bits.append(f"repo: {common_repo}")
+    extra = ""
+    if header_bits:
+        extra = "  (" + ", ".join(header_bits) + ")"
+    out: list[str] = [f"# nodes ({matched_count} matched, {len(kept)} shown){extra}"]
+    for nid in kept:
+        out.append(_node_line(G, nid, drop_community=drop_community, drop_repo=drop_repo))
+
+    kept_set = set(kept)
+    edge_lines: list[str] = []
+    for u, v in edges:
+        if u not in kept_set or v not in kept_set:
+            continue
+        if _is_implicit_calls_edge(G, u, v, kept_set):
+            continue
+        line = _edge_line(G, u, v)
+        if line is not None:
+            edge_lines.append(line)
+    if edge_lines:
+        out.append("")
+        out.append(f"# edges ({edge_total} matched, {len(edge_lines)} shown)")
+        out.extend(edge_lines)
+
+    return "\n".join(out)
+
+
 def _subgraph_to_text(
     G: nx.Graph,
     nodes: set[str],
     edges: list[tuple],
-    token_budget: int = 2000,
+    token_budget: int = 800,
     *,
     seeds: Optional[list[str]] = None,
     scores: Optional[dict[str, float]] = None,
+    repo_filter_active: bool = False,
 ) -> str:
-    """Emit nodes + edges as text, truncating to fit `token_budget`.
+    """Emit nodes + edges as compact text, enforcing `token_budget` on the
+    RENDERED output (not on raw node count).
 
     Nodes are walked in relevance order (seeds first, then BM25 score, then
-    degree tiebreaker). When the running token total would exceed the
-    budget, emit a footer summarizing the omitted set instead of more nodes.
-    Always emits at least `_MIN_NODES_KEPT` matched nodes when any exist.
+    degree tiebreaker). The render is rebuilt incrementally; node addition
+    stops as soon as the next addition would push the rendered text past
+    `token_budget`. A truncation footer reports the omitted breakdown by
+    repo and file_type. Always emits at least `_MIN_NODES_KEPT` matched
+    nodes when any exist (preserves the always-1 contract).
     """
-    budget = max(200, int(token_budget or 0)) if token_budget and token_budget > 0 else 200
+    # Honor caller's explicit budget (the `_MIN_NODES_KEPT` floor still
+    # guarantees at least 1 node when any matched, so a tiny budget can't
+    # produce an empty body). Default 200 only when the caller passes
+    # 0/None — never silently raise a low explicit value.
+    budget = int(token_budget) if token_budget and token_budget > 0 else 200
     seeds = seeds or []
     scores = scores or {}
 
-    ordered_nodes = _rank_nodes_for_truncation(G, nodes, seeds, scores)
+    ordered_nodes = [n for n in _rank_nodes_for_truncation(G, nodes, seeds, scores) if n in G]
+    matched_count = len(ordered_nodes)
+    edge_total = sum(1 for u, v in edges if u in nodes and v in nodes)
 
     kept: list[str] = []
-    omitted: list[str] = []
-    lines: list[str] = []
-    used_tokens = 0
-
+    last_rendered = ""
     for idx, nid in enumerate(ordered_nodes):
-        if nid not in G:
-            continue
-        line = _node_line(G, nid)
-        line_tokens = _approx_tokens(line) + 1  # +1 for newline
-        if used_tokens + line_tokens > budget and len(kept) >= _MIN_NODES_KEPT:
-            omitted = [n for n in ordered_nodes[idx:] if n in G]
+        candidate = kept + [nid]
+        rendered = _render_subgraph(
+            G,
+            candidate,
+            edges,
+            matched_count=matched_count,
+            edge_total=edge_total,
+            repo_filter_active=repo_filter_active,
+        )
+        if _approx_tokens(rendered) > budget and len(kept) >= _MIN_NODES_KEPT:
             break
-        kept.append(nid)
-        lines.append(line)
-        used_tokens += line_tokens
+        kept = candidate
+        last_rendered = rendered
 
-    kept_set = set(kept)
-    for u, v in edges:
-        if u in kept_set and v in kept_set:
-            line = _edge_line(G, u, v)
-            if line is None:
-                continue
-            line_tokens = _approx_tokens(line) + 1
-            # Edges share the budget; stop emitting them once exhausted but
-            # don't roll them into the omitted-node footer (different shape).
-            if used_tokens + line_tokens > budget:
-                break
-            lines.append(line)
-            used_tokens += line_tokens
+    if not kept:
+        # Edge case: matched set is empty.
+        return ""
 
+    omitted = ordered_nodes[len(kept):]
+    body = last_rendered
     if omitted:
-        # Categorical breakdown of what we dropped.
-        counts: dict[str, int] = {}
-        for nid in omitted:
-            cat = _category_for(G.nodes[nid] if nid in G else {})
-            counts[cat] = counts.get(cat, 0) + 1
-        breakdown = ", ".join(
-            f"{n} {c}" for c, n in sorted(counts.items(), key=lambda kv: -kv[1])
+        breakdown = _omitted_breakdown(G, omitted)
+        footer = (
+            f"\n\n# truncated: {len(kept)} nodes shown of {matched_count} matched "
+            f"(token budget {budget} reached)"
         )
-        # Threshold = the score of the first omitted node, if known. Useful
-        # to the agent: it knows where the relevance cliff is.
-        if omitted and omitted[0] in scores:
-            threshold_text = f"{scores[omitted[0]]:.2f}"
-        else:
-            threshold_text = "n/a"
-        lines.append(
-            f"... and {len(omitted)} more results omitted "
-            f"(total relevance dropped below threshold {threshold_text}). "
-            f"Top categories of omitted results: {breakdown}"
-        )
-
-    return "\n".join(lines)
+        if breakdown:
+            footer += f"\n# omitted breakdown: {breakdown}"
+        body = body + footer
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +401,10 @@ def query_graph(state: GraphState, arguments: dict) -> str:
     question = arguments["question"]
     mode = arguments.get("mode", "bfs")
     depth = min(int(arguments.get("depth", 3)), 6)
-    budget = int(arguments.get("token_budget", 2000))
+    # Default lowered from 2000 to 800 (token-economy benchmark): most
+    # "how does X work" questions fit in 800 tokens when scoped to a repo.
+    # Callers that want a wider sweep MUST pass `token_budget` explicitly.
+    budget = int(arguments.get("token_budget", 800))
     context_filter = arguments.get("context_filter")
     repo_filter = arguments.get("repo_filter")
 
@@ -278,7 +438,13 @@ def query_graph(state: GraphState, arguments: dict) -> str:
         header += f"| Context: {', '.join(resolved)} ({source}) "
     header += f"| {len(nodes)} nodes\n\n"
     return header + _subgraph_to_text(
-        traversal, nodes, edges, budget, seeds=start_nodes, scores=score_map
+        traversal,
+        nodes,
+        edges,
+        budget,
+        seeds=start_nodes,
+        scores=score_map,
+        repo_filter_active=bool(repo_filter),
     )
 
 

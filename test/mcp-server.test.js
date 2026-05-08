@@ -1321,9 +1321,10 @@ from mcp_server.tools import query_graph
 
 state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
 state.initial_load()
-out = query_graph(state, {'question': 'OrderThing search', 'token_budget': 200, 'repo_filter': 'r'})
-# Footer present.
-assert 'omitted' in out, out
+out = query_graph(state, {'question': 'OrderThing search', 'token_budget': 50, 'repo_filter': 'r'})
+# Footer present (compact format uses '# truncated:' / '# omitted breakdown:').
+assert 'truncated' in out, out
+assert 'omitted breakdown' in out, out
 # Approximate token budget respected (chars/4 heuristic, plus header slack).
 assert len(out) // 4 < 1500, f"output too large: {len(out)} chars"
 # Breakdown mentions one of our categories.
@@ -1355,7 +1356,10 @@ from mcp_server.tools import query_graph
 state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
 state.initial_load()
 out = query_graph(state, {'question': 'OrderThing search', 'token_budget': 10, 'repo_filter': 'r'})
-assert 'NODE' in out, out
+# Compact format: '# nodes' header is always present when any node is kept.
+assert '# nodes' in out, out
+# At least one OrderThing node line must appear.
+assert 'OrderThing' in out, out
 print('OK')
 `;
         const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
@@ -1387,6 +1391,203 @@ print('OK')
     const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
     assert.equal(r.status, 0, `degree-tiebreak script failed: ${r.stderr}`);
     assert.match(r.stdout, /OK/);
+});
+
+// ---------------------------------------------------------------------------
+// Compact-format / token-economy regression suite (P6b)
+// ---------------------------------------------------------------------------
+
+test('query_graph compact format: <label>  <path>:<line> rows, no NODE prefix', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'r', [
+            { id: 'h1', label: 'useProposalCounts', norm_label: 'useproposalcounts',
+              source_file: 'src/network/hooks/proposalsV2.js', source_location: 'L64',
+              file_type: 'function' },
+            { id: 'h2', label: 'OrderViewSet', norm_label: 'orderviewset',
+              source_file: 'orders/views.py', source_location: 'L142',
+              file_type: 'class' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'useProposalCounts OrderViewSet', 'repo_filter': 'r'})
+# No legacy markers.
+assert 'NODE ' not in out, out
+assert 'EDGE ' not in out, out
+assert '[src=' not in out, out
+# Compact rows present with two-space gap and ':<line>' suffix.
+assert 'useProposalCounts  src/network/hooks/proposalsV2.js:64' in out, out
+assert 'OrderViewSet  orders/views.py:142' in out, out
+# Section header present.
+assert '# nodes' in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `compact format script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph compact format: shared community surfaced in header, dropped from rows', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'r', [
+            { id: 'a', label: 'Alpha', norm_label: 'alpha', source_file: 'a.py', source_location: 'L1', community: 5 },
+            { id: 'b', label: 'AlphaTwo', norm_label: 'alphatwo', source_file: 'b.py', source_location: 'L2', community: 5 },
+            { id: 'c', label: 'AlphaThree', norm_label: 'alphathree', source_file: 'c.py', source_location: 'L3', community: 5 },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'Alpha', 'repo_filter': 'r', 'token_budget': 2000})
+assert 'community: 5' in out, out
+# No per-row community= column.
+assert 'community=5' not in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `community-suppression script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph compact format: shared repo dropped per-row when repo_filter active', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'r', [
+            { id: 'a', label: 'Alpha', norm_label: 'alpha', source_file: 'a.py', source_location: 'L1', repo: 'r' },
+            { id: 'b', label: 'AlphaTwo', norm_label: 'alphatwo', source_file: 'b.py', source_location: 'L2', repo: 'r' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'Alpha', 'repo_filter': 'r', 'token_budget': 2000})
+# No per-row repo= column.
+assert 'repo=r' not in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `repo-suppression script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph compact format: implicit calls edge dropped, references edge kept', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        // Use distinct labels so only `a` is a strong score-match for the
+        // query; b and c get pulled in via BFS so the (a,b) and (a,c) edges
+        // appear in `edges_seen`.
+        seedLinkedGraphFile(graphsDir, 'r', [
+            { id: 'a', label: 'AlphaSeed', norm_label: 'alphaseed', source_file: 'a.py', source_location: 'L1' },
+            { id: 'b', label: 'NeighborTwo', norm_label: 'neighbortwo', source_file: 'b.py', source_location: 'L2' },
+            { id: 'c', label: 'NeighborThree', norm_label: 'neighborthree', source_file: 'c.py', source_location: 'L3' },
+        ], [
+            { source: 'a', target: 'b', relation: 'calls', confidence: 1.0 },
+            { source: 'a', target: 'c', relation: 'references', confidence: 1.0 },
+        ]);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'AlphaSeed', 'repo_filter': 'r', 'token_budget': 2000})
+# Implicit 'calls' edge between two rendered nodes is suppressed.
+assert '[calls]' not in out, out
+# 'references' edge IS rendered.
+assert '[references]' in out, out
+# Edge arrow style.
+assert 'AlphaSeed -> NeighborThree' in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `implicit-edge script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph: post-render token_budget enforcement keeps output <= budget (with footer slack)', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        const nodes = [];
+        const links = [];
+        for (let i = 0; i < 60; i++) {
+            nodes.push({
+                id: `n${i}`,
+                label: `OrderThing${i}WithALongerLabelToBlowUpTokens`,
+                norm_label: `orderthing${i}`,
+                source_file: `src/some/deeply/nested/path/orders_module_${i}.py`,
+                source_location: `L${i + 100}`,
+                file_type: i % 2 === 0 ? 'function' : 'class',
+                repo: i % 2 === 0 ? 'repoA' : 'repoB',
+            });
+            // Hub-and-spoke around n0 so BFS pulls the whole set into `nodes`.
+            if (i > 0) links.push({ source: 'n0', target: `n${i}`, relation: 'imports', confidence: 1.0 });
+        }
+        seedLinkedGraphFile(graphsDir, 'r', nodes, links);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph, _approx_tokens
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'OrderThing', 'repo_filter': 'r', 'token_budget': 200})
+# Truncation footer present with breakdown.
+assert '# truncated:' in out, out
+assert '# omitted breakdown:' in out, out
+# Strip header line so we only measure the rendered subgraph + footer
+# against budget. Allow ~10% slack for the footer text itself.
+header, _, body = out.partition('\\n\\n')
+budget_with_slack = int(200 * 1.10) + 30
+tok = _approx_tokens(body)
+assert tok <= budget_with_slack, f"rendered tokens {tok} exceed budget+slack {budget_with_slack}"
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `post-render budget script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph default token_budget is 800 in inputSchema', () => {
+    const text = readFileSync(join(__dirname, '..', 'src', 'mcp_server', 'server.py'), 'utf8');
+    // Find the query_graph tool definition and confirm token_budget default 800.
+    const idx = text.indexOf('name="query_graph"');
+    assert.ok(idx !== -1, 'query_graph tool not found in server.py');
+    const slice = text.slice(idx, idx + 1500);
+    assert.match(slice, /"token_budget":\s*\{\s*"type":\s*"integer",\s*"default":\s*800\s*\}/,
+        `token_budget default not 800 in inputSchema:\n${slice}`);
 });
 
 // ---------------------------------------------------------------------------

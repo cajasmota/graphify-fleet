@@ -45,7 +45,9 @@ kill -USR1 <pid>
 - All tool responses are returned as a single `TextContent` part. Where the
   payload is structured, the text is a JSON document (one line, no trailing
   newline). Where the payload is human-oriented (e.g. `query_graph`,
-  `get_node`), it is plain text with `NODE` / `EDGE` markers.
+  `get_node`), it is plain text. `query_graph` uses a compact section-header
+  format (`# nodes (N matched, M shown)` / `# edges (...)`); `get_node` and
+  the other tools use bespoke layouts documented per-tool below.
 - Errors that the server can attribute to user input (missing required args,
   unresolvable endpoints, unavailable repos, etc.) are returned as a JSON
   object with an `error` key, NOT raised — agents should branch on that
@@ -88,25 +90,53 @@ composite (per-repo graphs joined by link-table edges).
 | `question` | string | — | yes | Natural-language question or keyword search. Tokens shorter than 3 chars are dropped. |
 | `mode` | `"bfs" \| "dfs"` | `"bfs"` | no | Traversal mode. |
 | `depth` | integer | `3` | no | Max traversal depth. Capped at 6. |
-| `token_budget` | integer | `2000` | no | Approximate token cap for the response. `chars/4` heuristic. Floor of 200. |
+| `token_budget` | integer | `800` | no | Approximate token cap **on the rendered output** (not raw node count). `chars/4` heuristic. Floor of 200. Pass a higher value (e.g. `2500`) to widen the sweep. |
 | `context_filter` | array of string | — | no | List of relation/community filters; when omitted the server infers filters from `question`. |
 | `repo_filter` | string | — | no | Restrict to one repo's local graph (matches the graph file stem). |
 
 ### Response
 
 Plain text. First line is a header (`Traversal: BFS depth=3 | Start: [...]
-| 7 nodes`). Subsequent lines are `NODE …` and `EDGE …` markers. When the
-node set exceeds `token_budget`, an omission footer is appended:
+| 7 nodes`). The body uses a compact section-header layout:
 
 ```
-... and 12 more results omitted (total relevance dropped below threshold 1.42).
-Top categories of omitted results: function 7, class 5
+# nodes (47 matched, 12 shown)  (community: 4, repo: backend)
+useProposalCounts  src/network/hooks/proposalsV2.js:64
+OrderViewSet  orders/views.py:142
+...
+
+# edges (31 matched, 4 shown)
+OrderViewSet -> Order  [imports]
+```
+
+Format rules:
+
+- `<label>  <source_file>:<line>` — two spaces between label and path. No
+  `NODE` / `EDGE` prefixes; no `[src=...]` envelope.
+- When all rendered nodes share the same `community` or `repo`, that field
+  is surfaced once in the section header and dropped from each row. When
+  `repo_filter` is set, the per-row `repo=` is always suppressed.
+- Edges with `relation=calls` between two nodes already in the rendered
+  list are dropped — their trace is implied by neighbor structure. Edges
+  with high-information relations (`imports`, `references`, `inherits_from`,
+  cross-repo links) are always rendered.
+
+`token_budget` is enforced on the **rendered** output (the text the agent
+sees), not on raw node count. Truncation is graceful — top-scored nodes
+are kept, and a footer reports the omitted breakdown by repo + file_type:
+
+```
+# truncated: 12 nodes shown of 47 matched (token budget 800 reached)
+# omitted breakdown: 12 from backend_a, 8 from backend_b; 14 functions, 6 classes
 ```
 
 ### Notes
 
 - Always returns at least one node when any matched, even if `token_budget`
   is unrealistically tight.
+- Default `token_budget` is `800` — tuned for "how does X work" questions
+  combined with `repo_filter`. Pass a higher value explicitly when a wider
+  sweep is wanted.
 - Ranking uses BM25 with camelCase tokenization and a degree tiebreak band
   of 0.5 — see `scoring.py` and `_rank_nodes_for_truncation`.
 - See also: [`get_node`](#get_node), [`get_neighbors`](#get_neighbors).

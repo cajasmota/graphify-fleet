@@ -96,7 +96,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                         "question": {"type": "string", "description": "Natural language question or keyword search"},
                         "mode": {"type": "string", "enum": ["bfs", "dfs"], "default": "bfs"},
                         "depth": {"type": "integer", "default": 3},
-                        "token_budget": {"type": "integer", "default": 2000},
+                        "token_budget": {"type": "integer", "default": 800},
                         "context_filter": {"type": "array", "items": {"type": "string"}},
                         "repo_filter": {"type": "string", "description": "Restrict to a single repo's graph (matches the graph file stem in graphs-dir)."},
                     },
