@@ -1,7 +1,7 @@
 // Tests for src/links.js — pure-Node cross-repo link table.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -635,6 +635,77 @@ test('clearStringCache: removes the per-group cache directory', () => {
         assert.ok(existsSync(root), 'cache dir created');
         clearStringCache('g', fleetBase);
         assert.ok(!existsSync(root), 'cache dir removed');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// Regression: graphify writes `source_file` as paths RELATIVE to the repo
+// root for many node kinds. Without an anchor the string scanner saw zero
+// files. The fix follows the graphs-dir symlink (created by
+// ensureGroupGraphsDir) up two levels to recover the repo root.
+test('runStringLinkPass: resolves relative source_file via graphs-dir symlink anchor', { skip: process.platform === 'win32' ? 'symlinks require admin/dev-mode on Windows' : false }, () => {
+    const tmp = mkTmp();
+    try {
+        // Mirror the real layout: <repo>/graphify-out/graph.json + a symlink
+        // at <graphs-dir>/<repo>.json pointing at it.
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        mkdirSync(graphsDir, { recursive: true });
+
+        function setupRepo(slug, relSrc, body) {
+            const repoRoot = join(tmp, slug);
+            const srcAbs = join(repoRoot, relSrc);
+            mkdirSync(join(srcAbs, '..'), { recursive: true });
+            writeFileSync(srcAbs, body);
+            // graphify-out/graph.json with a node carrying a RELATIVE source_file.
+            const graphOutDir = join(repoRoot, 'graphify-out');
+            mkdirSync(graphOutDir, { recursive: true });
+            const graphFile = join(graphOutDir, 'graph.json');
+            writeFileSync(graphFile, JSON.stringify({
+                directed: false, multigraph: false, graph: {},
+                nodes: [{ id: `${slug}1`, label: relSrc, repo: slug, source_file: relSrc, file_type: 'code' }],
+                links: [],
+            }));
+            // graphs-dir entry — symlink mirroring install.refreshGraphSymlink.
+            symlinkSync(graphFile, join(graphsDir, `${slug}.json`));
+        }
+
+        setupRepo('backend', join('core', 'urls.py'), 'urlpatterns = [path("/api/v1/orders/", view)]');
+        setupRepo('frontend', join('src', 'orders.ts'), 'axios.get("/api/v1/orders/")');
+
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.ok(r.files_scanned >= 2, `expected >=2 files scanned, got ${r.files_scanned}`);
+        assert.equal(r.links, 1, 'cross-repo http_path link emitted from relative source_file paths');
+        const obj = loadLinks('g', tmp);
+        const sm = obj.links.filter(l => l.method === 'string');
+        assert.equal(sm.length, 1);
+        assert.equal(sm[0].channel, 'http_path');
+        assert.equal(sm[0].identifier, '/api/v1/orders');
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// Regression sibling: when the graph entry is a plain file (no symlink anchor,
+// e.g. Windows non-elevated copy fallback) and source_file is relative, the
+// scanner skips silently rather than blowing up.
+test('runStringLinkPass: relative source_file with no symlink anchor is skipped silently', () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs');
+        const fleetBase = join(tmp, 'fleet');
+        mkdirSync(graphsDir, { recursive: true });
+        // Plain JSON file (not a symlink) — no anchor recoverable.
+        writeFileSync(join(graphsDir, 'a.json'), JSON.stringify({
+            directed: false, multigraph: false, graph: {},
+            nodes: [{ id: 'a1', label: 'x', repo: 'a', source_file: 'rel/path/x.py' }],
+            links: [],
+        }));
+        writeFileSync(join(graphsDir, 'b.json'), JSON.stringify({
+            directed: false, multigraph: false, graph: {},
+            nodes: [{ id: 'b1', label: 'y', repo: 'b', source_file: 'rel/path/y.ts' }],
+            links: [],
+        }));
+        const r = runStringLinkPass('g', graphsDir, { base: tmp, fleetBase });
+        assert.equal(r.links, 0);
+        assert.equal(r.files_scanned, 0);
     } finally { rmSync(tmp, { recursive: true, force: true }); }
 });
 

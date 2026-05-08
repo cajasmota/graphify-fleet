@@ -27,8 +27,8 @@
 // Pure Node — no MCP coupling, no python invocation. Idempotent. Atomic
 // write (tmp + rename).
 
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, readdirSync, statSync, rmSync, readlinkSync, lstatSync, realpathSync } from 'node:fs';
+import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
@@ -103,6 +103,43 @@ export function loadCandidates(group, base = GROUPS_DIR_DEFAULT) {
 export function saveCandidates(group, doc, base = GROUPS_DIR_DEFAULT) {
     const out = { version: doc.version ?? 1, candidates: Array.isArray(doc.candidates) ? doc.candidates : [] };
     writeJsonAtomic(candidatesPath(group, base), out);
+}
+
+// Resolve the repo root anchor for a per-repo graph entry in the graphs-dir.
+// Layout (set up by `src/install.js` via `ensureGroupGraphsDir`):
+//   <graphs-dir>/<repo_tag>.json  -> symlink (or junction/copy on Windows)
+//                                    pointing at <repo-root>/graphify-out/graph.json
+// Strategy:
+//   1. lstat: if the entry is a symlink (or junction), resolve and walk up
+//      two levels to land on the repo root.
+//   2. Plain file (Windows non-elevated copy fallback): no anchor recoverable
+//      from the file itself — return null so the caller skips relative paths.
+// Returns an absolute path string or null.
+function resolveRepoRoot(graphFile) {
+    try {
+        const st = lstatSync(graphFile);
+        if (st.isSymbolicLink()) {
+            // readlinkSync may return a relative target; realpathSync canonicalizes.
+            let target;
+            try { target = realpathSync(graphFile); }
+            catch { target = readlinkSync(graphFile); }
+            if (!isAbsolute(target)) target = resolvePath(dirname(graphFile), target);
+            // <repo-root>/graphify-out/graph.json -> up 2 -> <repo-root>
+            return resolvePath(target, '..', '..');
+        }
+    } catch {}
+    return null;
+}
+
+// Resolve a node's `source_file` against the repo root (when the path is
+// relative). Returns an absolute path or null if no anchor is available.
+// Graphify writes source_file as a path RELATIVE to the repo root for most
+// nodes; older runs and some node kinds emit absolute paths verbatim.
+function resolveNodeSourceFile(sourceFile, repoRoot) {
+    if (typeof sourceFile !== 'string' || !sourceFile) return null;
+    if (isAbsolute(sourceFile)) return sourceFile;
+    if (!repoRoot) return null;
+    return resolvePath(repoRoot, sourceFile);
 }
 
 // Read a per-repo graph file and return { tag, nodes, edges } where edges are
@@ -748,6 +785,10 @@ export function runStringLinkPass(group, graphsDir, opts = {}) {
     for (const file of files) {
         const g = readGraph(file);
         if (!g) continue;
+        // Anchor for relative `source_file` entries: follow the graphs-dir
+        // symlink (created by ensureGroupGraphsDir) and walk up to the repo
+        // root. Computed once per graph file, reused for every node below.
+        const repoRoot = resolveRepoRoot(file);
         // Collect unique source files per repo from this graph.
         const perRepo = new Map(); // repo -> Set<absPath>
         for (const [, node] of g.nodes.entries()) {
@@ -755,12 +796,13 @@ export function runStringLinkPass(group, graphsDir, opts = {}) {
             if (typeof sf !== 'string' || !sf) continue;
             const repo = pickRepoTag(node, g.tag);
             if (!repo) continue;
-            // Only absolute paths are scannable. Relative source_file paths
-            // (which graphify also produces) are skipped — we have no anchor
-            // to resolve them to disk from the graphs-dir alone.
-            if (!sf.startsWith('/')) continue;
+            const abs = resolveNodeSourceFile(sf, repoRoot);
+            // Skip silently when no anchor and path is relative, or the
+            // resolved file does not exist on disk (graph may be stale).
+            if (!abs) continue;
+            if (!existsSync(abs)) continue;
             if (!perRepo.has(repo)) perRepo.set(repo, new Set());
-            perRepo.get(repo).add(sf);
+            perRepo.get(repo).add(abs);
         }
         for (const [repo, set] of perRepo.entries()) {
             if (!keepByRepo.has(repo)) keepByRepo.set(repo, new Set());
