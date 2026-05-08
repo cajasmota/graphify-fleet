@@ -13,6 +13,23 @@ only (new optional args, new optional response fields).
 - Renames go through deprecation: the old name returns identical results for
   one major version before removal.
 
+## Scoping
+
+Every tool that accepts `repo_filter` follows a uniform contract:
+
+- **Omitted** — server defaults to `--default-repo <slug>` (the caller's repo
+  inferred from the per-project `.mcp.json`). Per-project MCPs scope to
+  their own repo automatically; no need for the agent to remember.
+- **String** — `"<slug>"` scopes to one repo (legacy behaviour). The special
+  string `"*"` widens to all loaded repos.
+- **List of strings** — scopes to exactly those repos. Use this for
+  cross-repo questions ("how does mobile call backend") so the response
+  joins only the listed repos instead of dumping the whole composite.
+
+The CLI flag `--default-repo <slug>` is wired automatically by `gfleet`'s
+`writeMcpJson`. When the server is launched manually without it, omitted
+`repo_filter` widens to the full composite (legacy behaviour).
+
 ## Environment
 
 | Var | Values | Effect |
@@ -92,7 +109,8 @@ composite (per-repo graphs joined by link-table edges).
 | `depth` | integer | `3` | no | Max traversal depth. Capped at 6. |
 | `token_budget` | integer | `800` | no | Approximate token cap **on the rendered output** (not raw node count). `chars/4` heuristic. Floor of 200. Pass a higher value (e.g. `2500`) to widen the sweep. |
 | `context_filter` | array of string | — | no | List of relation/community filters; when omitted the server infers filters from `question`. |
-| `repo_filter` | string | — | no | Restrict to one repo's local graph (matches the graph file stem). |
+| `repo_filter` | string \| array of string | caller's repo (via `--default-repo`) | no | See [Scoping](#scoping). String `"<slug>"` scopes to one repo, `"*"` widens to all, list scopes to exactly those repos. |
+| `full` | boolean | `false` | no | Cross-repo queries return a per-repo summary by default; set `true` to dump every match. No-op when scoped to one repo. |
 
 ### Response
 
@@ -130,6 +148,23 @@ are kept, and a footer reports the omitted breakdown by repo + file_type:
 # omitted breakdown: 12 from backend_a, 8 from backend_b; 14 functions, 6 classes
 ```
 
+### Cross-repo summary-first response
+
+When the resolved scope spans 2+ repos and `full=false` (the default), the
+response is a compact per-repo summary instead of a full node dump:
+
+```
+# matched in 3 repos
+core-mobile (3 nodes, top: createDeficiency, deficiencyService, useDeficiencies)
+upvate-core-frontend (89 nodes, top: DeficiencyForm, DeficiencyList, DeficiencyDetail)
+upvate-core-backend (12 nodes, top: DeficiencyViewSet, deficiency_serializer, deficiency_model)
+
+To explore further, refilter with repo_filter=[...] (subset), repo_filter='<one-repo>' (single), or pass full=true to dump all matches.
+```
+
+Top-3 labels per repo are picked from the BM25 ranking. Pass
+`full=true` to skip the summary and stream every match (legacy behaviour).
+
 ### Notes
 
 - Always returns at least one node when any matched, even if `token_budget`
@@ -153,7 +188,7 @@ Resolve a single node by label or id. Searches across all repos unless
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
 | `label` | string | — | yes | Label or node id (case-insensitive substring match). |
-| `repo_filter` | string | — | no | Restrict to one repo. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 
 ### Response
 
@@ -192,7 +227,7 @@ table.
 |------|------|---------|----------|-------------|
 | `label` | string | — | yes | Label / node id of the node. |
 | `relation_filter` | string | — | no | Case-insensitive substring on edge `relation`. |
-| `repo_filter` | string | — | no | Restrict to one repo's local graph. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 
 ### Response
 
@@ -251,7 +286,7 @@ List community ids and sizes.
 
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
-| `repo_filter` | string | — | no | Restrict to one repo. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 
 ### Response
 
@@ -272,7 +307,7 @@ composite (with `<repo>::` prefixed ids).
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
 | `top_n` | integer | `10` | no | How many to return. |
-| `repo_filter` | string | — | no | Restrict to one repo. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 
 ### Response
 
@@ -295,7 +330,7 @@ Summary stats. Aggregated across all repos unless `repo_filter` is set.
 
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
-| `repo_filter` | string | — | no | Restrict to one repo. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 
 ### Response
 
@@ -337,7 +372,7 @@ hops feel cheap and low-confidence hops feel expensive.
 | `source` | string | — | yes | Endpoint. May be `<repo>::<id>` prefixed or unprefixed (label / id lookup via `LabelIndex`). |
 | `target` | string | — | yes | Same as `source`. |
 | `max_hops` | integer | `8` | no | Reject paths longer than this. |
-| `repo_filter` | string | — | no | Force single-repo search. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). List form scopes the cross-repo composite to those repos. |
 
 ### Response
 
@@ -388,7 +423,7 @@ later. Writes to `~/.graphify/groups/<group>-memory/<timestamp>-<sha8>.json`.
 | `answer` | string | — | yes | The agent's answer. |
 | `type` | `"query" \| "path_query" \| "explain"` | `"query"` | no | Tag the kind of saved result. |
 | `nodes` | array of string | `[]` | no | Supporting node ids. |
-| `repo_filter` | string | — | no | Recorded with the entry; not enforced. |
+| `repo_filter` | string \| array of string | — | no | Recorded with the entry; not enforced. |
 
 ### Response
 
@@ -456,7 +491,7 @@ Return nodes whose `source_file` mtime is at or after a cutoff.
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
 | `since` | string | — | yes | Relative duration (`24h`, `7d`, `2w`, `1m`), ISO 8601 timestamp, or git ref (resolved per-repo; OLDEST timestamp is used). |
-| `repo_filter` | string | — | no | Restrict to one repo. |
+| `repo_filter` | string \| array of string | caller's repo | no | See [Scoping](#scoping). |
 | `limit` | integer | `50` | no | Max nodes returned. |
 
 ### Response
@@ -497,7 +532,7 @@ asc. Returns `{total, shown, candidates}`.
 
 | Name | Type | Default | Required | Description |
 |------|------|---------|----------|-------------|
-| `repo_filter` | string | — | no | Restrict to candidates whose source OR target has this repo prefix. |
+| `repo_filter` | string \| array of string | caller's repo | no | Restrict to candidates whose source OR target has any of these repo prefixes. See [Scoping](#scoping). |
 | `channel` | string | — | no | Exact channel match (e.g. `"http"`, `"redis_key"`). |
 | `method` | string | — | no | Exact method match (e.g. `"label_match"`, `"string"`). |
 | `limit` | integer | `20` | no | Max candidates returned. |

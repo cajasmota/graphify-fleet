@@ -26,7 +26,7 @@ from .links_loader import (
     write_json_atomic,
 )
 from .scoring import _score_nodes, _strip_diacritics
-from .state import GraphState
+from .state import GraphState, resolve_repo_filter
 from .traversal import _bfs, _dfs
 from .utils import _sanitize_label
 
@@ -35,17 +35,85 @@ from .utils import _sanitize_label
 # Common helpers
 # ---------------------------------------------------------------------------
 
-def _pick_graph(state: GraphState, repo_filter: Optional[str]) -> tuple[nx.Graph, bool]:
-    """Return (graph, is_composite). When repo_filter is set, returns the
-    per-repo graph (raw IDs). When unset, returns the composite view with
-    prefixed IDs and cross-repo edges overlaid.
+def _pick_graph(state: GraphState, repo_filter) -> tuple[nx.Graph, bool]:  # noqa: ANN001
+    """Return (graph, is_composite). Backwards compatible with the old
+    single-string `repo_filter`:
+
+      - `str` (single repo): per-repo graph (raw IDs).
+      - `None`: full composite view (prefixed IDs).
+      - `list[str]` (1 entry): per-repo graph (raw IDs) — same as the str case.
+      - `list[str]` (2+ entries): partial composite scoped to those repos.
     """
-    if repo_filter:
+    # Legacy str path preserved exactly.
+    if isinstance(repo_filter, str):
+        if not repo_filter:
+            return state.composite_view(), True
         G = state.graphs.get(repo_filter)
         if G is None:
             return nx.Graph(), False
         return G, False
+    if repo_filter is None:
+        return state.composite_view(), True
+    # List path. Length-1 collapses to the per-repo graph for parity with
+    # `repo_filter="<single>"` (no `<repo>::` prefix in IDs, same renderer
+    # output, summary-first explicitly skipped in query_graph).
+    if isinstance(repo_filter, list):
+        if len(repo_filter) == 1:
+            G = state.graphs.get(repo_filter[0])
+            if G is None:
+                return nx.Graph(), False
+            return G, False
+        return _scoped_composite(state, set(repo_filter)), True
+    # Defensive — `resolve_repo_filter` shouldn't produce other types.
     return state.composite_view(), True
+
+
+def _scoped_composite(state: GraphState, repos: set[str]) -> nx.Graph:
+    """Composite over the named subset of repos. Mirrors `composite_view`
+    but only emits nodes/edges from `repos`. Cross-repo edges between two
+    in-scope repos are kept; edges with one endpoint outside are dropped.
+    """
+    H = nx.Graph()
+    for tag in repos:
+        G = state.graphs.get(tag)
+        if G is None:
+            continue
+        for nid, data in G.nodes(data=True):
+            full_id = f"{tag}::{nid}"
+            d = dict(data)
+            d.setdefault("repo", tag)
+            d.setdefault("local_id", nid)
+            H.add_node(full_id, **d)
+        if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+            edge_iter = ((u, v, data) for u, v, _k, data in G.edges(keys=True, data=True))
+        else:
+            edge_iter = G.edges(data=True)
+        for u, v, data in edge_iter:
+            attrs = dict(data)
+            H.add_edge(f"{tag}::{u}", f"{tag}::{v}", **attrs)
+    for u, v, data in state.xrepo_edges.edges(data=True):
+        if u in H and v in H:
+            attrs = dict(data)
+            attrs.setdefault("cross_repo", True)
+            H.add_edge(u, v, **attrs)
+    return H
+
+
+def _resolve(state: GraphState, raw):  # noqa: ANN001
+    """Convenience: thread `state.default_repo` through `resolve_repo_filter`."""
+    return resolve_repo_filter(raw, getattr(state, "default_repo", None))
+
+
+def _legacy_repo(resolved: Optional[list[str]]) -> Optional[str]:
+    """Map a resolved scope back to a single-string `repo_filter` for handlers
+    that haven't been multi-repo-aware'd yet. Returns the slug for length-1
+    lists, None otherwise (so the handler walks all in-scope repos).
+    """
+    if resolved is None:
+        return None
+    if len(resolved) == 1:
+        return resolved[0]
+    return None
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -406,17 +474,21 @@ def query_graph(state: GraphState, arguments: dict) -> str:
     # Callers that want a wider sweep MUST pass `token_budget` explicitly.
     budget = int(arguments.get("token_budget", 800))
     context_filter = arguments.get("context_filter")
-    repo_filter = arguments.get("repo_filter")
+    full = bool(arguments.get("full", False))
+    raw_repo_filter = arguments.get("repo_filter")
+    resolved_scope = _resolve(state, raw_repo_filter)
 
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    # Single-repo unavailability check (preserves legacy envelope shape).
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        only = resolved_scope[0]
+        reason = state.is_unavailable(only)
         if reason:
-            return _unavailable_response(repo_filter, reason)
+            return _unavailable_response(only, reason)
 
-    G, _composite = _pick_graph(state, repo_filter)
+    G, composite = _pick_graph(state, resolved_scope)
     if G.number_of_nodes() == 0:
-        if repo_filter:
-            return f"No graph loaded for repo_filter='{repo_filter}'. Available: {state.available_repos()}"
+        if resolved_scope is not None and len(resolved_scope) == 1:
+            return f"No graph loaded for repo_filter='{resolved_scope[0]}'. Available: {state.available_repos()}"
         return "No graphs loaded."
 
     terms = [t.lower() for t in question.split() if len(t) > 2]
@@ -425,18 +497,37 @@ def query_graph(state: GraphState, arguments: dict) -> str:
     if not start_nodes:
         return "No matching nodes found."
     score_map = {nid: s for s, nid in scored}
-    resolved, source = _resolve_context_filters(question, context_filter)
-    traversal = _filter_graph_by_context(G, resolved)
+    resolved_ctx, source = _resolve_context_filters(question, context_filter)
+    traversal = _filter_graph_by_context(G, resolved_ctx)
     nodes, edges = (
         _dfs(traversal, start_nodes, depth) if mode == "dfs" else _bfs(traversal, start_nodes, depth)
     )
+
+    # Summary-first response when the resolved scope spans 2+ repos and the
+    # caller did not opt into the full dump. Cuts thousands of tokens on
+    # cross-repo "where does X live" questions; agent can refine with a
+    # narrower `repo_filter=[...]` follow-up.
+    #
+    # We use the BM25-matched set (every node with score > 0), not the BFS-
+    # visited set, so disconnected per-repo subgraphs still trigger the
+    # summary. The agent's intent is "find X across repos"; the BFS hop
+    # budget is an internal detail.
+    matched_ids = {nid for s, nid in scored if s > 0 and nid in traversal}
+    multi_repo = composite and _multi_repo_in_nodes(traversal, matched_ids) >= 2
+    if multi_repo and not full:
+        return _render_repo_summary(traversal, matched_ids, scored)
+
     header = (
         f"Traversal: {mode.upper()} depth={depth} "
         f"| Start: {[G.nodes[n].get('label', n) for n in start_nodes]} "
     )
-    if resolved:
-        header += f"| Context: {', '.join(resolved)} ({source}) "
+    if resolved_ctx:
+        header += f"| Context: {', '.join(resolved_ctx)} ({source}) "
     header += f"| {len(nodes)} nodes\n\n"
+    # `repo_filter_active` suppresses the per-row repo column when the render
+    # is scoped to a single repo (resolved length 1). For multi-repo dumps
+    # we leave the column in so the agent can tell repos apart.
+    repo_filter_active = resolved_scope is not None and len(resolved_scope) == 1
     return header + _subgraph_to_text(
         traversal,
         nodes,
@@ -444,24 +535,93 @@ def query_graph(state: GraphState, arguments: dict) -> str:
         budget,
         seeds=start_nodes,
         scores=score_map,
-        repo_filter_active=bool(repo_filter),
+        repo_filter_active=repo_filter_active,
     )
+
+
+# Per-repo summary header for the cross-repo summary-first response. Three
+# rows per repo (top by score) keeps the response compact while giving the
+# agent enough signal to choose a narrower filter on the follow-up call.
+_SUMMARY_TOP_PER_REPO = 3
+
+
+def _multi_repo_in_nodes(G: nx.Graph, nodes: set[str]) -> int:
+    """Count distinct repos represented in `nodes` (via the `repo` attr)."""
+    seen: set[str] = set()
+    for nid in nodes:
+        if nid not in G:
+            continue
+        r = G.nodes[nid].get("repo") or ""
+        if r:
+            seen.add(r)
+    return len(seen)
+
+
+def _render_repo_summary(
+    G: nx.Graph,
+    nodes: set[str],
+    scored: list[tuple[float, str]],
+) -> str:
+    """Render the summary-first response: one block per repo with the top-N
+    scoring nodes. `scored` is the full BM25 ranking from `_score_nodes`,
+    sorted desc by score; we walk it once and bucket per repo.
+    """
+    by_repo: dict[str, list[str]] = {}
+    counts: dict[str, int] = {}
+    for nid in nodes:
+        if nid not in G:
+            continue
+        r = G.nodes[nid].get("repo") or ""
+        if not r:
+            continue
+        counts[r] = counts.get(r, 0) + 1
+    # Walk scored in order, picking top-N labels per repo from the matched set.
+    matched = nodes
+    for _score, nid in scored:
+        if nid not in matched or nid not in G:
+            continue
+        r = G.nodes[nid].get("repo") or ""
+        if not r:
+            continue
+        bucket = by_repo.setdefault(r, [])
+        if len(bucket) >= _SUMMARY_TOP_PER_REPO:
+            continue
+        bucket.append(_sanitize_label(G.nodes[nid].get("label", nid)))
+
+    repos_sorted = sorted(counts.keys(), key=lambda r: -counts[r])
+    out: list[str] = [f"# matched in {len(repos_sorted)} repos"]
+    for r in repos_sorted:
+        top = by_repo.get(r, [])
+        top_str = ", ".join(top) if top else ""
+        line = f"{r} ({counts[r]} nodes"
+        if top_str:
+            line += f", top: {top_str}"
+        line += ")"
+        out.append(line)
+    out.append("")
+    out.append(
+        "To explore further, refilter with repo_filter=[...] (subset), "
+        "repo_filter='<one-repo>' (single), or pass full=true to dump all matches."
+    )
+    return "\n".join(out)
 
 
 def get_node(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
     label = arguments["label"]
-    repo_filter = arguments.get("repo_filter")
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    # Single-repo unavailability shortcut (preserves legacy envelope).
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        reason = state.is_unavailable(resolved_scope[0])
         if reason:
-            return _unavailable_response(repo_filter, reason)
+            return _unavailable_response(resolved_scope[0], reason)
+    scope_set: Optional[set[str]] = set(resolved_scope) if resolved_scope is not None else None
 
     # Tier A item 2: consult the LabelIndex first for an O(1) hit.
     matches: list[tuple[str, str, dict]] = []
     index_hits = state.label_index.lookup_substring(label)
     for repo, nid, _orig in index_hits:
-        if repo_filter and repo != repo_filter:
+        if scope_set is not None and repo not in scope_set:
             continue
         if state.is_unavailable(repo):
             continue
@@ -475,7 +635,7 @@ def get_node(state: GraphState, arguments: dict) -> str:
     # index already hit — keeps the fast path fast.
     if not matches:
         term = label.lower()
-        scope = [repo_filter] if repo_filter else state.available_repos()
+        scope = list(resolved_scope) if resolved_scope is not None else state.available_repos()
         for tag in scope:
             G = state.graphs.get(tag)
             if G is None:
@@ -510,19 +670,21 @@ def get_neighbors(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
     label = arguments["label"]
     rel_filter = (arguments.get("relation_filter") or "").lower()
-    repo_filter = arguments.get("repo_filter")
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    # Length-1 scope: keep the legacy single-repo response shape.
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        only = resolved_scope[0]
+        reason = state.is_unavailable(only)
         if reason:
-            return _unavailable_response(repo_filter, reason)
-        G = state.graphs.get(repo_filter)
+            return _unavailable_response(only, reason)
+        G = state.graphs.get(only)
         if G is None:
-            return f"No graph loaded for repo_filter='{repo_filter}'."
+            return f"No graph loaded for repo_filter='{only}'."
         matches = _find_node(G, label)
         if not matches:
-            return f"No node matching '{label}' found in {repo_filter}."
+            return f"No node matching '{label}' found in {only}."
         nid = matches[0]
-        lines = [f"Neighbors of {G.nodes[nid].get('label', nid)} (in {repo_filter}):"]
+        lines = [f"Neighbors of {G.nodes[nid].get('label', nid)} (in {only}):"]
         for neighbor in G.neighbors(nid):
             d = G.edges[nid, neighbor]
             rel = d.get("relation", "")
@@ -532,7 +694,12 @@ def get_neighbors(state: GraphState, arguments: dict) -> str:
                 f"  --> {G.nodes[neighbor].get('label', neighbor)} [{rel}] [{d.get('confidence', '')}]"
             )
         return "\n".join(lines)
-    G = state.composite_view()
+    # Multi-repo / unscoped path: walk a (full or partial) composite.
+    G = (
+        _scoped_composite(state, set(resolved_scope))
+        if resolved_scope is not None
+        else state.composite_view()
+    )
     matches = _find_node(G, label)
     if not matches:
         return f"No node matching '{label}' found across {len(state.graphs)} repos."
@@ -574,24 +741,30 @@ def get_community(state: GraphState, arguments: dict) -> str:
 
 def list_communities(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
-    repo_filter = arguments.get("repo_filter")
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        only = resolved_scope[0]
+        reason = state.is_unavailable(only)
         if reason:
-            return _unavailable_response(repo_filter, reason)
-        comms = state.communities.get(repo_filter, {})
+            return _unavailable_response(only, reason)
+        comms = state.communities.get(only, {})
         if not comms:
-            return f"No communities for repo '{repo_filter}'."
-        lines = [f"Communities in {repo_filter}:"]
+            return f"No communities for repo '{only}'."
+        lines = [f"Communities in {only}:"]
         for cid, members in sorted(comms.items(), key=lambda kv: -len(kv[1])):
             lines.append(f"  {cid}: {len(members)} nodes")
         return "\n".join(lines)
+    scope: Optional[set[str]] = set(resolved_scope) if resolved_scope is not None else None
     lines = ["Communities (per repo):"]
     for tag in sorted(state.communities.keys()):
+        if scope is not None and tag not in scope:
+            continue
         comms = state.communities[tag]
         lines.append(f"  [{tag}] {len(comms)} communities")
     if state.unavailable:
         for tag in sorted(state.unavailable):
+            if scope is not None and tag not in scope:
+                continue
             lines.append(f"  [{tag}] unavailable: {state.unavailable[tag]}")
     return "\n".join(lines)
 
@@ -599,12 +772,12 @@ def list_communities(state: GraphState, arguments: dict) -> str:
 def god_nodes(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
     top_n = int(arguments.get("top_n", 10))
-    repo_filter = arguments.get("repo_filter")
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        reason = state.is_unavailable(resolved_scope[0])
         if reason:
-            return _unavailable_response(repo_filter, reason)
-    G, _composite = _pick_graph(state, repo_filter)
+            return _unavailable_response(resolved_scope[0], reason)
+    G, _composite = _pick_graph(state, resolved_scope)
     if G.number_of_nodes() == 0:
         return "No graph available."
     ranked = sorted(G.nodes(data=True), key=lambda nd: G.degree(nd[0]), reverse=True)[:top_n]
@@ -616,31 +789,40 @@ def god_nodes(state: GraphState, arguments: dict) -> str:
 
 def graph_stats(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
-    repo_filter = arguments.get("repo_filter")
-    if repo_filter:
-        reason = state.is_unavailable(repo_filter)
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        only = resolved_scope[0]
+        reason = state.is_unavailable(only)
         if reason:
-            return _unavailable_response(repo_filter, reason)
-        G = state.graphs.get(repo_filter)
+            return _unavailable_response(only, reason)
+        G = state.graphs.get(only)
         if G is None:
-            return f"No graph for '{repo_filter}'."
-        comms = state.communities.get(repo_filter, {})
+            return f"No graph for '{only}'."
+        comms = state.communities.get(only, {})
         return (
-            f"Repo: {repo_filter}\n"
+            f"Repo: {only}\n"
             f"Nodes: {G.number_of_nodes()}\n"
             f"Edges: {G.number_of_edges()}\n"
             f"Communities: {len(comms)}\n"
         )
-    total_nodes = sum(g.number_of_nodes() for g in state.graphs.values())
-    total_edges = sum(g.number_of_edges() for g in state.graphs.values())
+    scope: Optional[set[str]] = set(resolved_scope) if resolved_scope is not None else None
+    in_scope = (
+        {tag: g for tag, g in state.graphs.items() if scope is None or tag in scope}
+    )
+    total_nodes = sum(g.number_of_nodes() for g in in_scope.values())
+    total_edges = sum(g.number_of_edges() for g in in_scope.values())
     out = (
-        f"Repos loaded: {len(state.graphs)}\n"
+        f"Repos loaded: {len(in_scope)}\n"
         f"Nodes (sum): {total_nodes}\n"
         f"Edges (sum, excluding cross-repo): {total_edges}\n"
         f"Cross-repo links: {state.xrepo_edges.number_of_edges()}\n"
     )
     if state.unavailable:
-        out += f"Unavailable repos: {sorted(state.unavailable.keys())}\n"
+        unavailable_in_scope = sorted(
+            t for t in state.unavailable if scope is None or t in scope
+        )
+        if unavailable_in_scope:
+            out += f"Unavailable repos: {unavailable_in_scope}\n"
     return out
 
 
@@ -649,7 +831,7 @@ def graph_stats(state: GraphState, arguments: dict) -> str:
 _SHORTEST_PATH_MAX_LEN = 12
 
 
-def _resolve_endpoint(state: GraphState, raw: str, repo_filter: Optional[str]) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+def _resolve_endpoint(state: GraphState, raw: str, repo_filter) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:  # noqa: ANN001
     """Resolve a user-supplied endpoint to a prefixed `<repo>::<id>` node id
     in the composite graph. Returns `(prefixed_id, None, None)` on success or
     `(None, matches, error)` when ambiguous / not found.
@@ -662,20 +844,27 @@ def _resolve_endpoint(state: GraphState, raw: str, repo_filter: Optional[str]) -
     raw = (raw or "").strip()
     if not raw:
         return None, None, "empty endpoint"
+    def _in_scope(repo: str) -> bool:
+        if repo_filter is None:
+            return True
+        if isinstance(repo_filter, str):
+            return repo == repo_filter
+        return repo in repo_filter
+
     if "::" in raw:
         repo, local = raw.split("::", 1)
         G = state.graphs.get(repo)
         if G is None or local not in G:
             return None, None, f"node '{raw}' not found"
-        if repo_filter and repo != repo_filter:
-            return None, None, f"endpoint '{raw}' is in repo '{repo}', not in repo_filter '{repo_filter}'"
+        if not _in_scope(repo):
+            return None, None, f"endpoint '{raw}' is in repo '{repo}', outside repo_filter scope"
         return f"{repo}::{local}", None, None
 
     hits = state.label_index.lookup_substring(raw)
     candidates: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for repo, nid, _orig in hits:
-        if repo_filter and repo != repo_filter:
+        if not _in_scope(repo):
             continue
         if state.is_unavailable(repo):
             continue
@@ -738,7 +927,15 @@ def shortest_path(state: GraphState, arguments: dict) -> str:
     `1 / max(0.1, confidence)` so high-confidence hops feel cheap.
     """
     state.refresh_if_stale()
-    repo_filter = arguments.get("repo_filter")
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    # Map back to legacy single-string for the existing in-handler logic so
+    # this tool's semantics stay byte-for-byte identical when the resolved
+    # scope is a single repo. Multi-repo lists run through the composite
+    # path with `crosses_repos=True`.
+    repo_filter = _legacy_repo(resolved_scope)
+    scope_set: Optional[set[str]] = (
+        set(resolved_scope) if resolved_scope is not None and len(resolved_scope) > 1 else None
+    )
     if repo_filter:
         reason = state.is_unavailable(repo_filter)
         if reason:
@@ -752,8 +949,11 @@ def shortest_path(state: GraphState, arguments: dict) -> str:
     # so cross-repo paths (where neither endpoint is in the active per-repo
     # graph) work without needing the legacy `_score_nodes` to be invoked
     # against a single graph.
-    src_full, src_alts, src_err = _resolve_endpoint(state, src_raw, repo_filter)
-    tgt_full, tgt_alts, tgt_err = _resolve_endpoint(state, tgt_raw, repo_filter)
+    # Pass the scope set (or single repo) so endpoint resolution rejects
+    # endpoints that fall outside the caller-specified scope.
+    endpoint_scope: Optional[set[str]] = scope_set or ({repo_filter} if repo_filter else None)
+    src_full, src_alts, src_err = _resolve_endpoint(state, src_raw, endpoint_scope)
+    tgt_full, tgt_alts, tgt_err = _resolve_endpoint(state, tgt_raw, endpoint_scope)
     if src_full is None:
         payload = {"found": False, "reason": src_err, "source": src_raw, "target": tgt_raw}
         if src_alts:
@@ -810,6 +1010,10 @@ def shortest_path(state: GraphState, arguments: dict) -> str:
 
     # Cross-repo path: build the weighted composite and search.
     H = state.composite_view(weighted=True)
+    if scope_set is not None:
+        # Drop nodes outside the requested scope so paths can only traverse
+        # the subset the caller specified.
+        H = H.subgraph([n for n in H.nodes if n.split("::", 1)[0] in scope_set]).copy()
     if H.number_of_nodes() == 0:
         return json.dumps({"found": False, "reason": "no graphs loaded", "source": src_full, "target": tgt_full})
     if src_full not in H or tgt_full not in H:
@@ -926,7 +1130,8 @@ def _matches_repo_filter(prefixed: str, repo_filter: str) -> bool:
 def list_link_candidates(state: GraphState, arguments: dict) -> str:
     """Return filtered + sorted candidates from `<group>-link-candidates.json`."""
     state.refresh_if_stale()
-    repo_filter = arguments.get("repo_filter")
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
+    scope_set: Optional[set[str]] = set(resolved_scope) if resolved_scope is not None else None
     channel = arguments.get("channel")
     method = arguments.get("method")
     limit = int(arguments.get("limit", 20))
@@ -935,13 +1140,19 @@ def list_link_candidates(state: GraphState, arguments: dict) -> str:
     if path is None or not path.exists():
         return json.dumps({"total": 0, "shown": 0, "candidates": []})
 
+    def _entry_in_scope(entry: dict) -> bool:
+        if scope_set is None:
+            return True
+        for side in ("source", "target"):
+            v = entry.get(side, "")
+            if isinstance(v, str) and "::" in v and v.split("::", 1)[0] in scope_set:
+                return True
+        return False
+
     _version, entries = load_candidates_file(path)
     filtered: list[dict] = []
     for entry in entries:
-        if repo_filter and not (
-            _matches_repo_filter(entry.get("source", ""), repo_filter)
-            or _matches_repo_filter(entry.get("target", ""), repo_filter)
-        ):
+        if not _entry_in_scope(entry):
             continue
         if channel is not None and entry.get("channel") != channel:
             continue
@@ -1281,7 +1492,7 @@ def _resolve_since(state: GraphState, since: str) -> Optional[float]:
 def recent_activity(state: GraphState, arguments: dict) -> str:
     state.refresh_if_stale()
     since = str(arguments.get("since") or "").strip()
-    repo_filter = arguments.get("repo_filter")
+    resolved_scope = _resolve(state, arguments.get("repo_filter"))
     try:
         limit = int(arguments.get("limit", 50))
     except (TypeError, ValueError):
@@ -1297,8 +1508,9 @@ def recent_activity(state: GraphState, arguments: dict) -> str:
         return json.dumps({"error": "could not resolve 'since'", "since": since})
 
     repos: list[str]
-    if repo_filter:
-        if repo_filter not in state.graphs:
+    if resolved_scope is not None and len(resolved_scope) == 1:
+        only = resolved_scope[0]
+        if only not in state.graphs:
             return json.dumps({
                 "since": since,
                 "resolved_since_ts": cutoff,
@@ -1306,7 +1518,10 @@ def recent_activity(state: GraphState, arguments: dict) -> str:
                 "shown": 0,
                 "nodes": [],
             })
-        repos = [repo_filter]
+        repos = [only]
+    elif resolved_scope is not None:
+        scope_set = set(resolved_scope)
+        repos = [r for r in state.graphs.keys() if r in scope_set]
     else:
         repos = list(state.graphs.keys())
 

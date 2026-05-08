@@ -25,6 +25,35 @@ from .telemetry import get_telemetry
 from .utils import debug_log, warn
 
 
+def resolve_repo_filter(
+    value,  # noqa: ANN001 — accepts None | str | list[str]
+    default_repo: Optional[str],
+) -> Optional[list[str]]:
+    """Normalize a caller-supplied `repo_filter` to a concrete repo-list scope.
+
+    Returns:
+        - `None` — no scope (search all loaded repos).
+        - `list[str]` — restrict to exactly these repos.
+
+    Rules:
+        - `None` (omitted): fall back to `[default_repo]` if set, else `None`.
+        - `str`: `"*"` widens to all repos (`None`); any other value scopes
+          to that single repo for backward compat.
+        - `list[str]`: scope to those repos; an empty / all-blank list widens
+          to `None` so callers can opt in defensively.
+    """
+    if value is None:
+        return [default_repo] if default_repo else None
+    if isinstance(value, str):
+        if value == "*":
+            return None
+        return [value]
+    if isinstance(value, list):
+        cleaned = [r for r in value if isinstance(r, str) and r]
+        return cleaned or None
+    raise ValueError(f"repo_filter must be str | list[str] | None, got {type(value).__name__}")
+
+
 def _scan_graphs_dir(graphs_dir: Path) -> list[Path]:
     if not graphs_dir.exists():
         return []
@@ -90,6 +119,10 @@ class GraphState:
         self.links_mtime: float = 0.0
         self.candidates_mtime: float = 0.0
         self.rejections_mtime: float = 0.0
+        # Caller-inferred repo slug from `--default-repo`. When tool callers
+        # omit `repo_filter`, `resolve_repo_filter` falls back to this slug so
+        # per-project MCP invocations scope to their own repo by default.
+        self.default_repo: Optional[str] = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------

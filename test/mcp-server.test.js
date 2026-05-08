@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ensureGroupGraphsDir, mcpServerPath, groupGraphsDir } from '../src/integrations.js';
+import { ensureGroupGraphsDir, mcpServerPath, groupGraphsDir, writeMcpJson } from '../src/integrations.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1742,5 +1742,240 @@ test('SCHEMA.md: present, well-formed, documents every registered tool name', ()
     assert.ok(unique.length >= 10, `expected at least 10 registered tools, got ${unique.length}`);
     for (const tool of unique) {
         assert.match(text, new RegExp(`## \`${tool}\``), `SCHEMA.md missing section for tool '${tool}'`);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Smart scoping defaults (B2.1 / B2.2 / B2.3)
+// ---------------------------------------------------------------------------
+
+test('resolve_repo_filter: applies caller-inferred default when omitted; "*" widens; list scopes', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from mcp_server.state import resolve_repo_filter
+# Omitted with default-repo set -> [default]
+assert resolve_repo_filter(None, 'repo_a') == ['repo_a']
+# Omitted without default-repo -> None (legacy: walk all)
+assert resolve_repo_filter(None, None) is None
+# Single string preserved (back-compat).
+assert resolve_repo_filter('repo_b', 'repo_a') == ['repo_b']
+# "*" widens to all repos regardless of default-repo.
+assert resolve_repo_filter('*', 'repo_a') is None
+# List form scopes exactly to those repos.
+assert resolve_repo_filter(['a', 'b'], 'repo_a') == ['a', 'b']
+# Empty / blank list collapses to None.
+assert resolve_repo_filter([], 'repo_a') is None
+assert resolve_repo_filter(['', None], 'repo_a') is None
+print('OK')
+`;
+    const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(r.status, 0, `resolve_repo_filter script failed: ${r.stderr}`);
+    assert.match(r.stdout, /OK/);
+});
+
+test('query_graph: omitted repo_filter defaults to --default-repo, scopes to caller repo', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repo_a', [
+            { id: 'a1', label: 'OrderThingA', norm_label: 'orderthinga', source_file: 'a.py', source_location: 'L1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repo_b', [
+            { id: 'b1', label: 'OrderThingB', norm_label: 'orderthingb', source_file: 'b.py', source_location: 'L1' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.default_repo = 'repo_a'
+state.initial_load()
+out = query_graph(state, {'question': 'OrderThing search'})
+# Default-repo scope: only repo_a labels appear.
+assert 'OrderThingA' in out, out
+assert 'OrderThingB' not in out, out
+# Single-repo render: not the multi-repo summary.
+assert '# matched in' not in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `default-repo script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph: repo_filter="*" produces summary-first response with per-repo top-3', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        // Seed 10 matching nodes per repo so the top-3 cap actually trims.
+        const mkNodes = (prefix) => {
+            const ns = [];
+            for (let i = 0; i < 10; i++) {
+                ns.push({ id: `${prefix}${i}`, label: `OrderThing${prefix}${i}`, norm_label: `orderthing${prefix.toLowerCase()}${i}`,
+                          source_file: `${prefix}.py`, source_location: `L${i}` });
+            }
+            return ns;
+        };
+        seedLinkedGraphFile(graphsDir, 'repo_a', mkNodes('A'), []);
+        seedLinkedGraphFile(graphsDir, 'repo_b', mkNodes('B'), []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.default_repo = 'repo_a'
+state.initial_load()
+# Explicit '*' opts into the summary-first cross-repo render.
+out = query_graph(state, {'question': 'OrderThing search', 'repo_filter': '*'})
+assert '# matched in 2 repos' in out, out
+assert 'repo_a' in out, out
+assert 'repo_b' in out, out
+# Top-N cap: at most 3 labels per repo.
+import re
+lines = out.splitlines()
+for line in lines:
+    if line.startswith('repo_a (') or line.startswith('repo_b ('):
+        m = re.search(r'top: (.+)\\)$', line)
+        if m:
+            top = [t.strip() for t in m.group(1).split(',')]
+            assert len(top) <= 3, top
+# Refilter hint present.
+assert 'refilter' in out.lower(), out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `summary-first script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph: repo_filter=[a, b] scopes to listed repos only', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repo_a', [
+            { id: 'a1', label: 'OrderA', norm_label: 'ordera', source_file: 'a.py', source_location: 'L1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repo_b', [
+            { id: 'b1', label: 'OrderB', norm_label: 'orderb', source_file: 'b.py', source_location: 'L1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repo_c', [
+            { id: 'c1', label: 'OrderC', norm_label: 'orderc', source_file: 'c.py', source_location: 'L1' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'Order match', 'repo_filter': ['repo_a', 'repo_b']})
+# Two repos in scope -> summary-first response with exactly those two.
+assert '# matched in 2 repos' in out, out
+assert 'repo_a' in out, out
+assert 'repo_b' in out, out
+assert 'repo_c' not in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `list-filter script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('query_graph: full=true overrides summary on cross-repo queries', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repo_a', [
+            { id: 'a1', label: 'OrderA', norm_label: 'ordera', source_file: 'a.py', source_location: 'L1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repo_b', [
+            { id: 'b1', label: 'OrderB', norm_label: 'orderb', source_file: 'b.py', source_location: 'L1' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import query_graph
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+out = query_graph(state, {'question': 'Order match', 'repo_filter': '*', 'full': True})
+# full=true: full subgraph render, not the summary header.
+assert '# matched in' not in out, out
+assert '# nodes' in out, out
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `full=true script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('list filter is accepted by every multi-repo tool (smoke)', { skip: PY_WITH_DEPS ? false : 'python with networkx not available' }, () => {
+    const tmp = mkTmp();
+    try {
+        const graphsDir = join(tmp, 'graphs'); mkdirSync(graphsDir, { recursive: true });
+        seedLinkedGraphFile(graphsDir, 'repo_a', [
+            { id: 'a1', label: 'OrderA', norm_label: 'ordera', source_file: 'a.py', source_location: 'L1' },
+        ], []);
+        seedLinkedGraphFile(graphsDir, 'repo_b', [
+            { id: 'b1', label: 'OrderB', norm_label: 'orderb', source_file: 'b.py', source_location: 'L1' },
+        ], []);
+        const script = `
+import sys
+sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', 'src'))})
+from pathlib import Path
+from mcp_server.state import GraphState
+from mcp_server.tools import (
+    get_node, get_neighbors, list_communities, graph_stats, god_nodes,
+)
+
+state = GraphState(Path(${JSON.stringify(graphsDir)}), None)
+state.initial_load()
+scope = ['repo_a', 'repo_b']
+# Every tool below must accept a list and not crash; no specific shape asserted
+# beyond non-empty / non-error returns.
+assert 'OrderA' in get_node(state, {'label': 'OrderA', 'repo_filter': scope})
+assert 'OrderA' in get_neighbors(state, {'label': 'OrderA', 'repo_filter': scope})
+assert 'Communities' in list_communities(state, {'repo_filter': scope})
+assert 'Repos loaded' in graph_stats(state, {'repo_filter': scope})
+assert 'God nodes' in god_nodes(state, {'top_n': 3, 'repo_filter': scope})
+print('OK')
+`;
+        const r = spawnSync(PY_WITH_DEPS, ['-c', script], { encoding: 'utf8', timeout: 10000 });
+        assert.equal(r.status, 0, `list-filter smoke script failed: ${r.stderr}`);
+        assert.match(r.stdout, /OK/);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('writeMcpJson: includes --default-repo <slug> in args', () => {
+    const repo = mkTmp();
+    const stateDir = mkTmp();
+    const prevState = process.env.GFLEET_STATE_DIR;
+    process.env.GFLEET_STATE_DIR = stateDir;
+    try {
+        writeMcpJson(repo, '/tmp/g.json', 'core-mobile', 'upvate');
+        const obj = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+        const args = obj.mcpServers['graphify-upvate'].args;
+        assert.ok(args.includes('--default-repo'), `expected --default-repo flag in args: ${JSON.stringify(args)}`);
+        assert.ok(args.includes('core-mobile'), `expected slug in args: ${JSON.stringify(args)}`);
+    } finally {
+        if (prevState === undefined) delete process.env.GFLEET_STATE_DIR;
+        else process.env.GFLEET_STATE_DIR = prevState;
+        rmSync(repo, { recursive: true, force: true });
+        rmSync(stateDir, { recursive: true, force: true });
     }
 });

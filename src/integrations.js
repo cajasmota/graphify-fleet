@@ -145,8 +145,16 @@ export function ensureGroupGraphsDir(group, repos) {
 }
 
 // Build the .mcp.json args for the gfleet-owned server.
-function mcpServerCommandArgs(group, graphsDir) {
-    return [mcpServerPath(), graphsDir, '--group', group];
+//
+// `defaultRepo` (when provided) is wired through as `--default-repo <slug>`
+// so the server can scope omitted `repo_filter` calls to the caller's repo.
+// Without it, the agent must always remember to pass `repo_filter` for
+// per-repo questions — and the MCP benchmark shows it doesn't reliably do
+// so. Pass null/undefined for the global Windsurf entry (no caller repo).
+function mcpServerCommandArgs(group, graphsDir, defaultRepo) {
+    const args = [mcpServerPath(), graphsDir, '--group', group];
+    if (defaultRepo) args.push('--default-repo', defaultRepo);
+    return args;
 }
 
 // Note: `groupGraph` is intentionally retained as a positional parameter for
@@ -167,7 +175,7 @@ export function writeMcpJson(repo, _groupGraph, repoSlug, group) {
     // graphs-dir, joined by the cross-repo link table when present.
     obj.mcpServers[`graphify-${group}`] = {
         command: py,
-        args: mcpServerCommandArgs(group, graphsDir),
+        args: mcpServerCommandArgs(group, graphsDir, repoSlug),
     };
     // Remove old single-key 'graphify' entry from previous gfleet versions
     delete obj.mcpServers.graphify;

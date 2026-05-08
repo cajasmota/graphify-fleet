@@ -28,11 +28,24 @@ from typing import Optional
 
 from . import tools as _tools
 from .state import GraphState
+
+# Shared inputSchema fragment for `repo_filter` across every tool that accepts
+# it. Accepts: a single repo slug (legacy), a list of slugs (multi-repo
+# scope), or the special string "*" meaning "all repos". When omitted, the
+# server falls back to `--default-repo` so per-project MCPs scope to their
+# own repo by default — see `state.resolve_repo_filter`.
+_REPO_FILTER_SCHEMA = {
+    "oneOf": [
+        {"type": "string", "description": "Single repo slug, or '*' for all repos."},
+        {"type": "array", "items": {"type": "string"}, "description": "List of repo slugs to scope to."},
+    ],
+    "description": "Default: caller's repo (auto-inferred from --default-repo). Pass '*' or a list to widen.",
+}
 from .telemetry import debug_level, get_telemetry, verbose_log
 from .utils import _filter_blank_stdin
 
 
-def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], candidates_path: Optional[Path] = None, rejections_path: Optional[Path] = None) -> None:
+def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], candidates_path: Optional[Path] = None, rejections_path: Optional[Path] = None, default_repo: Optional[str] = None) -> None:
     try:
         from mcp.server import Server
         from mcp.server.stdio import stdio_server
@@ -41,7 +54,10 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
         raise ImportError("mcp not installed. Run: pip install mcp") from e
 
     state = GraphState(graphs_dir, links_path, candidates_path, rejections_path)
+    state.default_repo = default_repo
     state.initial_load()
+    if default_repo:
+        print(f"default-repo: {default_repo} (omitted repo_filter scopes here; pass '*' for all repos)", file=sys.stderr)
     print(
         f"loaded {len(state.graphs)} repo graphs from {graphs_dir}"
         + (f" (group={group})" if group else "")
@@ -89,7 +105,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
         return [
             types.Tool(
                 name="query_graph",
-                description="Search the knowledge graph using BFS or DFS. With repo_filter, scopes to one repo's local graph; without, walks the cross-repo composite (per-repo graphs joined by link-table edges).",
+                description="Search the knowledge graph using BFS or DFS. Scoping defaults to the caller's repo (auto-inferred from --default-repo); pass repo_filter='*' for all repos, or a list to scope to a subset.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -98,7 +114,8 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                         "depth": {"type": "integer", "default": 3},
                         "token_budget": {"type": "integer", "default": 800},
                         "context_filter": {"type": "array", "items": {"type": "string"}},
-                        "repo_filter": {"type": "string", "description": "Restrict to a single repo's graph (matches the graph file stem in graphs-dir)."},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
+                        "full": {"type": "boolean", "default": False, "description": "When true, skip the per-repo summary on cross-repo queries and dump the full result. No-op when scoped to a single repo."},
                     },
                     "required": ["question"],
                 },
@@ -110,7 +127,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                     "type": "object",
                     "properties": {
                         "label": {"type": "string"},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                     },
                     "required": ["label"],
                 },
@@ -123,7 +140,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                     "properties": {
                         "label": {"type": "string"},
                         "relation_filter": {"type": "string"},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                     },
                     "required": ["label"],
                 },
@@ -142,10 +159,10 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
             ),
             types.Tool(
                 name="list_communities",
-                description="List community IDs and node counts. With repo_filter, scopes to one repo.",
+                description="List community IDs and node counts. Defaults to caller's repo; pass '*' or a list for multi-repo.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"repo_filter": {"type": "string"}},
+                    "properties": {"repo_filter": _REPO_FILTER_SCHEMA},
                 },
             ),
             types.Tool(
@@ -155,16 +172,16 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                     "type": "object",
                     "properties": {
                         "top_n": {"type": "integer", "default": 10},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                     },
                 },
             ),
             types.Tool(
                 name="graph_stats",
-                description="Summary stats: nodes, edges, communities. Aggregated across all repos unless repo_filter is set.",
+                description="Summary stats: nodes, edges, communities. Defaults to caller's repo; pass '*' or a list for multi-repo aggregation.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"repo_filter": {"type": "string"}},
+                    "properties": {"repo_filter": _REPO_FILTER_SCHEMA},
                 },
             ),
             types.Tool(
@@ -176,7 +193,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                         "source": {"type": "string"},
                         "target": {"type": "string"},
                         "max_hops": {"type": "integer", "default": 8},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                     },
                     "required": ["source", "target"],
                 },
@@ -187,7 +204,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "repo_filter": {"type": "string", "description": "Restrict to candidates whose source OR target has this repo prefix."},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                         "channel": {"type": "string", "description": "Exact channel match (e.g. 'http', 'redis_key')."},
                         "method": {"type": "string", "description": "Exact method match (e.g. 'label_match', 'string')."},
                         "limit": {"type": "integer", "default": 20},
@@ -227,7 +244,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                     "type": "object",
                     "properties": {
                         "since": {"type": "string", "description": "Relative duration, ISO 8601 timestamp, or git ref."},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                         "limit": {"type": "integer", "default": 50},
                     },
                     "required": ["since"],
@@ -251,7 +268,7 @@ def serve(graphs_dir: Path, group: Optional[str], links_path: Optional[Path], ca
                         "answer": {"type": "string"},
                         "type": {"type": "string", "enum": ["query", "path_query", "explain"], "default": "query"},
                         "nodes": {"type": "array", "items": {"type": "string"}, "default": []},
-                        "repo_filter": {"type": "string"},
+                        "repo_filter": _REPO_FILTER_SCHEMA,
                     },
                     "required": ["question", "answer"],
                 },
@@ -338,6 +355,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="mcp_server", description="gfleet MCP stdio server (per-repo graphs + cross-repo link overlay)")
     p.add_argument("graphs_dir", help="Directory containing per-repo <slug>.json graph files (typically symlinks)")
     p.add_argument("--group", default=None, help="Group tag (used to resolve <group>-links.json)")
+    p.add_argument("--default-repo", default=None, help="Caller's repo slug. When set, omitted repo_filter on tool calls scopes to this repo (pass repo_filter='*' to widen).")
     return p.parse_args(argv)
 
 
@@ -356,7 +374,7 @@ def main_cli(argv: Optional[list[str]] = None) -> None:
     links_path = _resolve_links_path(graphs_dir, group)
     candidates_path = _resolve_candidates_path(group)
     rejections_path = _resolve_rejections_path(group)
-    serve(graphs_dir, group, links_path, candidates_path, rejections_path)
+    serve(graphs_dir, group, links_path, candidates_path, rejections_path, default_repo=ns.default_repo)
 
 
 if __name__ == "__main__":
